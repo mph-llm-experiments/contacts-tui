@@ -196,3 +196,36 @@ func (db *DB) GetContactInteractions(contactID int, limit int) ([]Log, error) {
 	
 	return logs, rows.Err()
 }
+
+// UpdateContact updates all fields of a contact
+func (db *DB) UpdateContact(contact Contact) error {
+	query := `
+		UPDATE contacts 
+		SET name = ?, 
+		    email = ?, 
+		    phone = ?, 
+		    company = ?, 
+		    relationship_type = ?, 
+		    notes = ?, 
+		    label = ?,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+	
+	_, err := db.conn.Exec(query, 
+		contact.Name,
+		contact.Email,
+		contact.Phone,
+		contact.Company,
+		contact.RelationshipType,
+		contact.Notes,
+		contact.Label,
+		contact.ID,
+	)
+	
+	if err != nil {
+		return fmt.Errorf("updating contact: %w", err)
+	}
+	
+	return nil
+}

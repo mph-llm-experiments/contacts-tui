@@ -36,6 +36,12 @@ type Model struct {
 	// Relationship type selection mode
 	typeFilterMode bool
 	typeSelected   int
+	
+	// Edit mode
+	editMode       bool
+	editField      int // Which field is being edited
+	editInputs     []textinput.Model
+	editRelTypeIdx int // Selected relationship type in edit mode
 }
 
 // Available contact states
@@ -73,6 +79,18 @@ var InteractionTypes = []string{
 	"social-media",
 	"text",
 }
+
+// Edit field indices
+const (
+	EditFieldName = iota
+	EditFieldEmail
+	EditFieldPhone
+	EditFieldCompany
+	EditFieldRelType
+	EditFieldNotes
+	EditFieldLabel
+	EditFieldCount // Total number of fields
+)
 
 // Styles
 var (
@@ -119,11 +137,35 @@ func New(database *db.DB) (*Model, error) {
 	ta.CharLimit = 500
 	ta.ShowLineNumbers = false
 	
+	// Setup edit inputs
+	editInputs := make([]textinput.Model, EditFieldCount)
+	for i := range editInputs {
+		editInputs[i] = textinput.New()
+		editInputs[i].Width = 40
+		editInputs[i].CharLimit = 200
+		
+		switch i {
+		case EditFieldName:
+			editInputs[i].Placeholder = "Name"
+		case EditFieldEmail:
+			editInputs[i].Placeholder = "Email"
+		case EditFieldPhone:
+			editInputs[i].Placeholder = "Phone"
+		case EditFieldCompany:
+			editInputs[i].Placeholder = "Company"
+		case EditFieldNotes:
+			editInputs[i].Placeholder = "Notes"
+		case EditFieldLabel:
+			editInputs[i].Placeholder = "Label (e.g. @john)"
+		}
+	}
+	
 	return &Model{
-		db:        database,
-		contacts:  contacts,
-		filter:    ti,
-		noteInput: ta,
+		db:         database,
+		contacts:   contacts,
+		filter:     ti,
+		noteInput:  ta,
+		editInputs: editInputs,
 	}, nil
 }
 
@@ -173,6 +215,107 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.typeSelected > 0 {
 					m.typeSelected--
 				}
+			}
+			return m, nil
+		}
+		
+		// Edit mode handling
+		if m.editMode {
+			switch msg.String() {
+			case "esc":
+				// Cancel editing
+				m.editMode = false
+				m.editField = 0
+				for i := range m.editInputs {
+					m.editInputs[i].Blur()
+				}
+				return m, nil
+				
+			case "enter":
+				// Save changes if ctrl+enter or cmd+enter is pressed
+				if msg.Type == tea.KeyCtrlJ || msg.Type == tea.KeyCtrlM {
+					contacts := m.filteredContacts()
+					if len(contacts) > 0 && m.selected < len(contacts) {
+						contact := contacts[m.selected]
+						
+						// Update the contact
+						contact.Name = m.editInputs[EditFieldName].Value()
+						contact.Email = db.NewNullString(m.editInputs[EditFieldEmail].Value())
+						contact.Phone = db.NewNullString(m.editInputs[EditFieldPhone].Value())
+						contact.Company = db.NewNullString(m.editInputs[EditFieldCompany].Value())
+						contact.Notes = db.NewNullString(m.editInputs[EditFieldNotes].Value())
+						contact.Label = db.NewNullString(m.editInputs[EditFieldLabel].Value())
+						
+						// Set relationship type from the selected index
+						contact.RelationshipType = RelationshipTypes[m.editRelTypeIdx+1] // Skip "all"
+						
+						// Save to database
+						err := m.db.UpdateContact(contact)
+						if err != nil {
+							m.err = err
+						} else {
+							// Reload contacts
+							if newContacts, err := m.db.ListContacts(); err == nil {
+								m.contacts = newContacts
+							}
+						}
+					}
+					
+					// Exit edit mode
+					m.editMode = false
+					m.editField = 0
+					for i := range m.editInputs {
+						m.editInputs[i].Blur()
+					}
+					return m, nil
+				}
+				
+				// Regular enter - only cycle relationship type if on that field
+				if m.editField == EditFieldRelType {
+					// Cycle through relationship types
+					m.editRelTypeIdx = (m.editRelTypeIdx + 1) % (len(RelationshipTypes) - 1) // Skip "all"
+					return m, nil
+				}
+				
+			case "tab", "down":
+				// Move to next field
+				if m.editField < EditFieldCount-1 {
+					m.editInputs[m.editField].Blur()
+					m.editField++
+					if m.editField != EditFieldRelType {
+						m.editInputs[m.editField].Focus()
+					}
+				}
+				return m, textinput.Blink
+				
+			case "shift+tab", "up":
+				// Move to previous field
+				if m.editField > 0 {
+					if m.editField != EditFieldRelType {
+						m.editInputs[m.editField].Blur()
+					}
+					m.editField--
+					m.editInputs[m.editField].Focus()
+				}
+				return m, textinput.Blink
+				
+			case "left", "right":
+				// For relationship type field navigation
+				if m.editField == EditFieldRelType {
+					if msg.String() == "left" && m.editRelTypeIdx > 0 {
+						m.editRelTypeIdx--
+					} else if msg.String() == "right" && m.editRelTypeIdx < len(RelationshipTypes)-2 {
+						m.editRelTypeIdx++
+					}
+					return m, nil
+				}
+			}
+			
+			// Update the active text input
+			if m.editField != EditFieldRelType {
+				var cmd tea.Cmd
+				m.editInputs[m.editField], cmd = m.editInputs[m.editField].Update(msg)
+				return m, cmd
 			}
 			return m, nil
 		}
@@ -428,6 +571,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			
+		case "e":
+			// Enter edit mode
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				contact := contacts[m.selected]
+				m.editMode = true
+				m.editField = 0
+				
+				// Populate edit inputs with current values
+				m.editInputs[EditFieldName].SetValue(contact.Name)
+				if contact.Email.Valid {
+					m.editInputs[EditFieldEmail].SetValue(contact.Email.String)
+				} else {
+					m.editInputs[EditFieldEmail].SetValue("")
+				}
+				if contact.Phone.Valid {
+					m.editInputs[EditFieldPhone].SetValue(contact.Phone.String)
+				} else {
+					m.editInputs[EditFieldPhone].SetValue("")
+				}
+				if contact.Company.Valid {
+					m.editInputs[EditFieldCompany].SetValue(contact.Company.String)
+				} else {
+					m.editInputs[EditFieldCompany].SetValue("")
+				}
+				if contact.Notes.Valid {
+					m.editInputs[EditFieldNotes].SetValue(contact.Notes.String)
+				} else {
+					m.editInputs[EditFieldNotes].SetValue("")
+				}
+				if contact.Label.Valid {
+					m.editInputs[EditFieldLabel].SetValue(contact.Label.String)
+				} else {
+					m.editInputs[EditFieldLabel].SetValue("")
+				}
+				
+				// Set the relationship type index
+				m.editRelTypeIdx = 0 // Default to first type
+				if contact.RelationshipType != "" {
+					for i, rType := range RelationshipTypes[1:] { // Skip "all"
+						if rType == contact.RelationshipType {
+							m.editRelTypeIdx = i
+							break
+						}
+					}
+				}
+				
+				// Focus first field
+				m.editInputs[0].Focus()
+				
+				// Set width for edit inputs based on detail pane
+				if m.width > 0 {
+					detailWidth := m.width - (m.width / 3) - 10
+					for i := range m.editInputs {
+						m.editInputs[i].Width = detailWidth - 20
+					}
+				}
+				
+				return m, textinput.Blink
+			}
 		}
 	}
 	
@@ -551,6 +755,11 @@ func (m Model) View() string {
 	// Overlay note input if in note mode
 	if m.noteMode {
 		return m.renderNoteInput()
+	}
+	
+	// Overlay edit mode if active
+	if m.editMode {
+		return m.renderEditMode()
 	}
 	
 	return view
@@ -733,11 +942,15 @@ func (m Model) renderHelp() string {
 		return " Type note • Tab: change type • Ctrl+Enter: save • Esc: cancel"
 	}
 	
+	if m.editMode {
+		return " Tab/↓: next • Shift+Tab/↑: prev • Ctrl+Enter: save • Esc: cancel"
+	}
+	
 	if m.filterMode {
 		return " Type to filter • ↑/↓: navigate • Enter: confirm • Esc: cancel"
 	}
 	
-	help := " j/k: navigate • /: filter • c: contacted • s: state • n: note"
+	help := " j/k: navigate • /: filter • c: contacted • e: edit • s: state • n: note"
 	
 	// Add smart filter shortcuts
 	help += " • S: state • o: overdue • r: type"
@@ -869,6 +1082,80 @@ func (m Model) renderTypeSelection() string {
 	content := strings.Join(lines, "\n")
 	box := borderStyle.
 		Padding(1).
+		Background(lipgloss.Color("235")).
+		Render(content)
+	
+	// Center the box on the screen
+	centered := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
+	
+	return centered
+}
+
+// renderEditMode renders the edit mode overlay
+func (m Model) renderEditMode() string {
+	contacts := m.filteredContacts()
+	if len(contacts) == 0 || m.selected >= len(contacts) {
+		return "No contact selected"
+	}
+	
+	contact := contacts[m.selected]
+	
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Edit Contact: %s", contact.Name))
+	lines = append(lines, strings.Repeat("─", 40))
+	lines = append(lines, "")
+	
+	// Field labels and inputs
+	fieldLabels := []string{
+		"Name:            ",
+		"Email:           ",
+		"Phone:           ",
+		"Company:         ",
+		"Relationship:    ",
+		"Notes:           ",
+		"Label:           ",
+	}
+	
+	for i, label := range fieldLabels {
+		var fieldView string
+		
+		if i == EditFieldRelType {
+			// Special handling for relationship type
+			relType := RelationshipTypes[m.editRelTypeIdx+1] // Skip "all"
+			if i == m.editField {
+				fieldView = label + selectedStyle.Render(fmt.Sprintf("< %s >", relType))
+			} else {
+				fieldView = label + fmt.Sprintf("  %s  ", relType)
+			}
+		} else {
+			// Regular text input fields
+			if i == m.editField {
+				fieldView = label + m.editInputs[i].View()
+			} else {
+				value := m.editInputs[i].Value()
+				if value == "" {
+					value = m.editInputs[i].Placeholder
+				}
+				fieldView = label + value
+			}
+		}
+		
+		lines = append(lines, fieldView)
+		lines = append(lines, "")
+	}
+	
+	lines = append(lines, "")
+	lines = append(lines, "Tab/↓: next field • Shift+Tab/↑: previous • Ctrl+Enter: save • Esc: cancel")
+	
+	// Create a bordered box
+	content := strings.Join(lines, "\n")
+	box := borderStyle.
+		Padding(1).
+		Width(60).
 		Background(lipgloss.Color("235")).
 		Render(content)
 	

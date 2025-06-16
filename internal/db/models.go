@@ -51,3 +51,11 @@ func (c Contact) IsOverdue() bool {
 		return daysSince > 60
 	}
 }
+
+// NewNullString creates a sql.NullString from a string
+func NewNullString(s string) sql.NullString {
+	if s == "" {
+		return sql.NullString{Valid: false}
+	}
+	return sql.NullString{String: s, Valid: true}
+}
