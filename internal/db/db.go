@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -72,6 +73,10 @@ func (db *DB) ListContacts() ([]Contact, error) {
 		if err != nil {
 			return nil, fmt.Errorf("scanning contact: %w", err)
 		}
+		
+		// Clean up the name field - remove newlines and trim whitespace
+		c.Name = strings.TrimSpace(strings.ReplaceAll(c.Name, "\n", " "))
+		
 		contacts = append(contacts, c)
 	}
 	

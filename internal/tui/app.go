@@ -27,6 +27,15 @@ type Model struct {
 	noteType   int
 	filter     textinput.Model
 	err        error
+	
+	// Smart filters
+	stateFilter   bool // Show only non-ok states
+	overdueFilter bool // Show only overdue contacts
+	typeFilter    string // Filter by relationship type
+	
+	// Relationship type selection mode
+	typeFilterMode bool
+	typeSelected   int
 }
 
 // Available contact states
@@ -40,6 +49,18 @@ var ContactStates = []string{
 	"scheduled",
 	"timeout",
 	"ok",
+}
+
+// Available relationship types
+var RelationshipTypes = []string{
+	"all", // Special case to show all
+	"work",
+	"close", 
+	"family",
+	"network",
+	"social",
+	"providers",
+	"recruiters",
 }
 
 // Available interaction types
@@ -125,6 +146,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 		
 	case tea.KeyMsg:
+		// Relationship type filter mode handling
+		if m.typeFilterMode {
+			switch msg.String() {
+			case "esc":
+				m.typeFilterMode = false
+				m.typeSelected = 0
+				return m, nil
+			case "enter":
+				// Set the type filter
+				selected := RelationshipTypes[m.typeSelected]
+				if selected == "all" {
+					m.typeFilter = ""
+				} else {
+					m.typeFilter = selected
+				}
+				m.typeFilterMode = false
+				m.typeSelected = 0
+				m.selected = m.ensureValidSelection()
+				return m, nil
+			case "j", "down":
+				if m.typeSelected < len(RelationshipTypes)-1 {
+					m.typeSelected++
+				}
+			case "k", "up":
+				if m.typeSelected > 0 {
+					m.typeSelected--
+				}
+			}
+			return m, nil
+		}
+		
 		// State mode handling
 		if m.stateMode {
 			switch msg.String() {
@@ -242,6 +294,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Normal mode handling
 		switch msg.String() {
+		case "r":
+			// Enter relationship type filter mode
+			m.typeFilterMode = true
+			m.typeSelected = 0
+			// If a filter is already active, select it
+			if m.typeFilter != "" {
+				for i, rType := range RelationshipTypes {
+					if rType == m.typeFilter {
+						m.typeSelected = i
+						break
+					}
+				}
+			}
+			return m, nil
+			
 		case "q", "ctrl+c":
 			return m, tea.Quit
 			
@@ -307,6 +374,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			
+		case "S":
+			// Toggle state filter (show non-ok states)
+			m.stateFilter = !m.stateFilter
+			m.selected = m.ensureValidSelection()
+			return m, nil
+			
+		case "o":
+			// Toggle overdue filter
+			m.overdueFilter = !m.overdueFilter
+			m.selected = m.ensureValidSelection()
+			return m, nil
+			
 		case "n":
 			// Enter note mode
 			contacts := m.filteredContacts()
@@ -322,6 +401,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, textarea.Blink
 			}
+			
+		case "C":
+			// Clear all filters
+			m.stateFilter = false
+			m.overdueFilter = false
+			m.typeFilter = ""
+			m.filter.Reset()
+			m.selected = m.ensureValidSelection()
+			return m, nil
 			
 		case "c":
 			// Mark as contacted
@@ -348,14 +436,52 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // filteredContacts returns contacts matching the current filter
 func (m Model) filteredContacts() []db.Contact {
+	var filtered []db.Contact
+	
+	// Start with all contacts
+	contacts := m.contacts
+	
+	// Apply relationship type filter
+	if m.typeFilter != "" {
+		var typeFiltered []db.Contact
+		for _, c := range contacts {
+			if c.RelationshipType == m.typeFilter {
+				typeFiltered = append(typeFiltered, c)
+			}
+		}
+		contacts = typeFiltered
+	}
+	
+	// Apply smart filters
+	if m.stateFilter {
+		var stateFiltered []db.Contact
+		for _, c := range contacts {
+			// Include contacts with non-ok states or no state set
+			if c.State.Valid && c.State.String != "ok" {
+				stateFiltered = append(stateFiltered, c)
+			}
+		}
+		contacts = stateFiltered
+	}
+	
+	if m.overdueFilter {
+		var overdueFiltered []db.Contact
+		for _, c := range contacts {
+			if c.IsOverdue() {
+				overdueFiltered = append(overdueFiltered, c)
+			}
+		}
+		contacts = overdueFiltered
+	}
+	
+	// Apply text filter if present
 	if m.filter.Value() == "" {
-		return m.contacts
+		return contacts
 	}
 	
 	filter := strings.ToLower(m.filter.Value())
-	var filtered []db.Contact
 	
-	for _, c := range m.contacts {
+	for _, c := range contacts {
 		if strings.Contains(strings.ToLower(c.Name), filter) ||
 		   (c.Label.Valid && strings.Contains(strings.ToLower(c.Label.String), filter)) ||
 		   (c.Company.Valid && strings.Contains(strings.ToLower(c.Company.String), filter)) {
@@ -412,6 +538,11 @@ func (m Model) View() string {
 	
 	view := lipgloss.JoinVertical(lipgloss.Left, content, help)
 	
+	// Overlay relationship type selection if in type filter mode
+	if m.typeFilterMode {
+		return m.renderTypeSelection()
+	}
+	
 	// Overlay state selection if in state mode
 	if m.stateMode {
 		return m.renderStateSelection()
@@ -452,6 +583,22 @@ func (m Model) renderList(width, height int) string {
 	
 	// Header
 	header := "Contacts (" + fmt.Sprintf("%d", len(contacts)) + ")"
+	
+	// Add filter indicators
+	var filterIndicators []string
+	if m.typeFilter != "" {
+		filterIndicators = append(filterIndicators, "type:"+m.typeFilter)
+	}
+	if m.stateFilter {
+		filterIndicators = append(filterIndicators, "state:non-ok")
+	}
+	if m.overdueFilter {
+		filterIndicators = append(filterIndicators, "overdue")
+	}
+	if len(filterIndicators) > 0 {
+		header += " [" + strings.Join(filterIndicators, ", ") + "]"
+	}
+	
 	lines = append(lines, header)
 	lines = append(lines, strings.Repeat("─", width-2))
 	
@@ -476,7 +623,9 @@ func (m Model) renderList(width, height int) string {
 		
 		// Add label if present
 		if c.Label.Valid {
-			line += " " + labelStyle.Render("["+c.Label.String+"]")
+			// Clean up label too - remove newlines
+			label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
+			line += " " + labelStyle.Render("["+label+"]")
 		}
 		
 		// Apply selection styling to entire line if selected
@@ -572,6 +721,10 @@ func (m Model) renderDetail(width, height int) string {
 
 // renderHelp renders the help line
 func (m Model) renderHelp() string {
+	if m.typeFilterMode {
+		return " j/k: navigate • Enter: select • Esc: cancel"
+	}
+	
 	if m.stateMode {
 		return " j/k: navigate • Enter: confirm • Esc: cancel"
 	}
@@ -584,11 +737,23 @@ func (m Model) renderHelp() string {
 		return " Type to filter • ↑/↓: navigate • Enter: confirm • Esc: cancel"
 	}
 	
-	if m.filter.Value() != "" {
-		return " j/k: navigate • /: filter • c: contacted • s: state • n: note • Esc: clear filter • q: quit"
+	help := " j/k: navigate • /: filter • c: contacted • s: state • n: note"
+	
+	// Add smart filter shortcuts
+	help += " • S: state • o: overdue • r: type"
+	
+	// Show clear option if any filters are active
+	if m.stateFilter || m.overdueFilter || m.typeFilter != "" || m.filter.Value() != "" {
+		help += " • C: clear all"
 	}
 	
-	return " j/k: navigate • /: filter • c: contacted • s: state • n: note • q: quit"
+	if m.filter.Value() != "" {
+		help += " • Esc: clear filter"
+	}
+	
+	help += " • q: quit"
+	
+	return help
 }
 
 // renderStateSelection renders the state selection overlay
@@ -662,6 +827,43 @@ func (m Model) renderNoteInput() string {
 	lines = append(lines, m.noteInput.View())
 	lines = append(lines, "")
 	lines = append(lines, "Tab: change type • Ctrl+Enter: save • Esc: cancel")
+	
+	// Create a bordered box and center it
+	content := strings.Join(lines, "\n")
+	box := borderStyle.
+		Padding(1).
+		Background(lipgloss.Color("235")).
+		Render(content)
+	
+	// Center the box on the screen
+	centered := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
+	
+	return centered
+}
+
+// renderTypeSelection renders the relationship type selection overlay
+func (m Model) renderTypeSelection() string {
+	var lines []string
+	lines = append(lines, "Filter by relationship type:")
+	lines = append(lines, "")
+	
+	for i, rType := range RelationshipTypes {
+		line := fmt.Sprintf("  %s", rType)
+		if rType == "all" {
+			line = "  all (clear filter)"
+		}
+		if i == m.typeSelected {
+			line = selectedStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	
+	lines = append(lines, "")
+	lines = append(lines, "Press Enter to confirm, Esc to cancel")
 	
 	// Create a bordered box and center it
 	content := strings.Join(lines, "\n")
