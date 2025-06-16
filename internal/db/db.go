@@ -310,3 +310,36 @@ func (db *DB) DeleteContact(contactID int) error {
 	
 	return tx.Commit()
 }
+
+// AddContact creates a new contact in the database
+func (db *DB) AddContact(contact Contact) (int64, error) {
+	query := `
+		INSERT INTO contacts (
+			name, email, phone, company, 
+			relationship_type, state, notes, label,
+			created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	`
+	
+	result, err := db.conn.Exec(query,
+		contact.Name,
+		contact.Email,
+		contact.Phone,
+		contact.Company,
+		contact.RelationshipType,
+		contact.State,
+		contact.Notes,
+		contact.Label,
+	)
+	
+	if err != nil {
+		return 0, fmt.Errorf("inserting contact: %w", err)
+	}
+	
+	id, err := result.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("getting insert ID: %w", err)
+	}
+	
+	return id, nil
+}
