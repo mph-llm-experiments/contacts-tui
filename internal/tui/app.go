@@ -1088,7 +1088,7 @@ func (m Model) renderHelp() string {
 	
 	// Show clear option if any filters are active
 	if m.stateFilter || m.overdueFilter || m.typeFilter != "" || m.filter.Value() != "" || m.showArchived {
-		help += " • C: clear all"
+		help += " • C: clear filters"
 	}
 	
 	if m.filter.Value() != "" {
@@ -1477,7 +1477,7 @@ Filtering:
   r            Filter by relationship type
   o            Toggle filter: show only overdue
   A            Toggle: show/hide archived contacts
-  C            Clear all filters
+  C            Clear all active filters
   Esc          Clear search filter / Close help
 
 Help:
