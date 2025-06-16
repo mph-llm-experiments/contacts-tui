@@ -22,6 +22,8 @@ type Contact struct {
 	BumpCount         int
 	FollowUpDate      sql.NullTime
 	DeadlineDate      sql.NullTime
+	Archived          bool
+	ArchivedAt        sql.NullTime
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
 }
@@ -38,6 +40,11 @@ type Log struct {
 
 // IsOverdue checks if a contact is overdue based on relationship type
 func (c Contact) IsOverdue() bool {
+	// Archived contacts are never overdue
+	if c.Archived {
+		return false
+	}
+	
 	// Get the most recent interaction date (either contacted or bumped)
 	var lastInteraction sql.NullTime
 	

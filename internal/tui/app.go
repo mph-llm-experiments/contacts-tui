@@ -32,6 +32,7 @@ type Model struct {
 	stateFilter   bool // Show only non-ok states
 	overdueFilter bool // Show only overdue contacts
 	typeFilter    string // Filter by relationship type
+	showArchived  bool // Show archived contacts
 	
 	// Relationship type selection mode
 	typeFilterMode bool
@@ -46,6 +47,14 @@ type Model struct {
 	// Bump confirmation mode
 	bumpConfirmMode bool
 	bumpContactID   int
+	
+	// Delete confirmation mode
+	deleteConfirmMode bool
+	deleteContactID   int
+	deleteContactName string
+	
+	// Help overlay mode
+	showHelp bool
 }
 
 // Available contact states
@@ -114,6 +123,9 @@ var (
 	borderStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.NormalBorder()).
 			BorderForeground(lipgloss.Color("240"))
+	
+	dimmedStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("238")) // Dim gray for archived
 )
 // New creates a new application model
 func New(database *db.DB) (*Model, error) {
@@ -245,6 +257,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Any other key cancels
 				m.bumpConfirmMode = false
 				m.bumpContactID = 0
+				return m, nil
+			}
+		}
+		
+		// Delete confirmation mode handling
+		if m.deleteConfirmMode {
+			switch msg.String() {
+			case "y", "Y":
+				// Perform the delete
+				err := m.db.DeleteContact(m.deleteContactID)
+				if err != nil {
+					m.err = err
+				} else {
+					// Reload contacts to show updated state
+					if newContacts, err := m.db.ListContacts(); err == nil {
+						m.contacts = newContacts
+						m.selected = m.ensureValidSelection()
+					}
+				}
+				m.deleteConfirmMode = false
+				m.deleteContactID = 0
+				m.deleteContactName = ""
+				return m, nil
+			default:
+				// Any other key cancels
+				m.deleteConfirmMode = false
+				m.deleteContactID = 0
+				m.deleteContactName = ""
 				return m, nil
 			}
 		}
@@ -467,6 +507,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Normal mode handling
 		switch msg.String() {
+		case "?":
+			// Toggle help overlay
+			m.showHelp = !m.showHelp
+			return m, nil
+			
 		case "r":
 			// Enter relationship type filter mode
 			m.typeFilterMode = true
@@ -514,6 +559,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(textinput.Blink, tea.ClearScreen)
 			
 		case "esc":
+			// Close help overlay if open
+			if m.showHelp {
+				m.showHelp = false
+				return m, nil
+			}
 			// Clear filter and return to full list
 			if m.filter.Value() != "" {
 				m.filter.Reset()
@@ -580,6 +630,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.stateFilter = false
 			m.overdueFilter = false
 			m.typeFilter = ""
+			m.showArchived = false
 			m.filter.Reset()
 			m.selected = m.ensureValidSelection()
 			return m, nil
@@ -617,61 +668,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			contacts := m.filteredContacts()
 			if len(contacts) > 0 && m.selected < len(contacts) {
 				contact := contacts[m.selected]
-				m.editMode = true
-				m.editField = 0
-				
-				// Populate edit inputs with current values
-				m.editInputs[EditFieldName].SetValue(contact.Name)
-				if contact.Email.Valid {
-					m.editInputs[EditFieldEmail].SetValue(contact.Email.String)
-				} else {
-					m.editInputs[EditFieldEmail].SetValue("")
-				}
-				if contact.Phone.Valid {
-					m.editInputs[EditFieldPhone].SetValue(contact.Phone.String)
-				} else {
-					m.editInputs[EditFieldPhone].SetValue("")
-				}
-				if contact.Company.Valid {
-					m.editInputs[EditFieldCompany].SetValue(contact.Company.String)
-				} else {
-					m.editInputs[EditFieldCompany].SetValue("")
-				}
-				if contact.Notes.Valid {
-					m.editInputs[EditFieldNotes].SetValue(contact.Notes.String)
-				} else {
-					m.editInputs[EditFieldNotes].SetValue("")
-				}
-				if contact.Label.Valid {
-					m.editInputs[EditFieldLabel].SetValue(contact.Label.String)
-				} else {
-					m.editInputs[EditFieldLabel].SetValue("")
-				}
-				
-				// Set the relationship type index
-				m.editRelTypeIdx = 0 // Default to first type
-				if contact.RelationshipType != "" {
-					for i, rType := range RelationshipTypes[1:] { // Skip "all"
-						if rType == contact.RelationshipType {
-							m.editRelTypeIdx = i
-							break
-						}
-					}
-				}
-				
-				// Focus first field
-				m.editInputs[0].Focus()
-				
-				// Set width for edit inputs based on detail pane
-				if m.width > 0 {
-					detailWidth := m.width - (m.width / 3) - 10
-					for i := range m.editInputs {
-						m.editInputs[i].Width = detailWidth - 20
-					}
-				}
-				
-				return m, textinput.Blink
+				m.enterEditMode(contact)
 			}
+			return m, nil
+			
+		case "a":
+			// Toggle archive status
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				contact := contacts[m.selected]
+				var err error
+				if contact.Archived {
+					err = m.db.UnarchiveContact(contact.ID)
+				} else {
+					err = m.db.ArchiveContact(contact.ID)
+				}
+				if err != nil {
+					m.err = err
+				} else {
+					// Reload contacts to show updated state
+					if newContacts, err := m.db.ListContacts(); err == nil {
+						m.contacts = newContacts
+						m.selected = m.ensureValidSelection()
+					}
+				}
+			}
+			return m, nil
+			
+		case "A":
+			// Toggle showing archived contacts
+			m.showArchived = !m.showArchived
+			m.selected = m.ensureValidSelection()
+			return m, nil
+			
+		case "D":
+			// Delete contact with confirmation
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				contact := contacts[m.selected]
+				m.deleteConfirmMode = true
+				m.deleteContactID = contact.ID
+				m.deleteContactName = contact.Name
+			}
+			return m, nil
 		}
 	}
 	
@@ -684,6 +723,17 @@ func (m Model) filteredContacts() []db.Contact {
 	
 	// Start with all contacts
 	contacts := m.contacts
+	
+	// Filter archived contacts (unless showing archived)
+	if !m.showArchived {
+		var activeContacts []db.Contact
+		for _, c := range contacts {
+			if !c.Archived {
+				activeContacts = append(activeContacts, c)
+			}
+		}
+		contacts = activeContacts
+	}
 	
 	// Apply relationship type filter
 	if m.typeFilter != "" {
@@ -807,6 +857,16 @@ func (m Model) View() string {
 		return m.renderBumpConfirmation()
 	}
 	
+	// Overlay delete confirmation if active
+	if m.deleteConfirmMode {
+		return m.renderDeleteConfirmation()
+	}
+	
+	// Overlay help if active
+	if m.showHelp {
+		return m.renderHelpOverlay()
+	}
+	
 	return view
 }
 
@@ -849,6 +909,9 @@ func (m Model) renderList(width, height int) string {
 	if m.overdueFilter {
 		filterIndicators = append(filterIndicators, "overdue")
 	}
+	if m.showArchived {
+		filterIndicators = append(filterIndicators, "archived")
+	}
 	if len(filterIndicators) > 0 {
 		header += " [" + strings.Join(filterIndicators, ", ") + "]"
 	}
@@ -870,6 +933,11 @@ func (m Model) renderList(width, height int) string {
 			line = stateStyle.Render("•") + " "
 		} else {
 			line = "  "
+		}
+		
+		// Add archived indicator
+		if c.Archived {
+			line += dimmedStyle.Render("[ARCH] ")
 		}
 		
 		// Add name
@@ -988,6 +1056,10 @@ func (m Model) renderDetail(width, height int) string {
 
 // renderHelp renders the help line
 func (m Model) renderHelp() string {
+	if m.deleteConfirmMode {
+		return " y: DELETE CONTACT • any other key: cancel"
+	}
+	
 	if m.bumpConfirmMode {
 		return " y: confirm bump • any other key: cancel"
 	}
@@ -1012,21 +1084,16 @@ func (m Model) renderHelp() string {
 		return " Type to filter • ↑/↓: navigate • Enter: confirm • Esc: cancel"
 	}
 	
-	help := " j/k: navigate • /: filter • c: contacted • b: bump • e: edit • s: state • n: note"
-	
-	// Add smart filter shortcuts
-	help += " • S: state • o: overdue • r: type"
+	help := " j/k: navigate • /: filter • c: contacted • ?: help • q: quit"
 	
 	// Show clear option if any filters are active
-	if m.stateFilter || m.overdueFilter || m.typeFilter != "" || m.filter.Value() != "" {
+	if m.stateFilter || m.overdueFilter || m.typeFilter != "" || m.filter.Value() != "" || m.showArchived {
 		help += " • C: clear all"
 	}
 	
 	if m.filter.Value() != "" {
 		help += " • Esc: clear filter"
 	}
-	
-	help += " • q: quit"
 	
 	return help
 }
@@ -1284,6 +1351,148 @@ func (m Model) renderBumpConfirmation() string {
 		Align(lipgloss.Center, lipgloss.Center).
 		Render(prompt)
 	
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Width(width).
+		Height(height).
+		Render(content)
+	
+	// Center on screen
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
+}
+// renderDeleteConfirmation renders the delete confirmation prompt
+func (m Model) renderDeleteConfirmation() string {
+	// Build the confirmation prompt
+	width := 60
+	height := 10
+	
+	prompt := fmt.Sprintf("Delete contact '%s'?\n\n"+
+		"This will permanently delete the contact\n"+
+		"and all associated interaction logs.\n\n"+
+		"This action cannot be undone!\n\n"+
+		"Press 'y' to confirm, any other key to cancel.", m.deleteContactName)
+	
+	content := lipgloss.NewStyle().
+		Width(width-4).
+		Height(height-4).
+		Align(lipgloss.Center, lipgloss.Center).
+		Foreground(lipgloss.Color("196")). // Red text for warning
+		Render(prompt)
+	
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("196")). // Red border for danger
+		Width(width).
+		Height(height).
+		Render(content)
+	
+	// Center on screen
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
+}
+
+// enterEditMode enters edit mode for the given contact
+func (m *Model) enterEditMode(contact db.Contact) {
+	m.editMode = true
+	m.editField = 0
+	
+	// Populate edit inputs with current values
+	m.editInputs[EditFieldName].SetValue(contact.Name)
+	if contact.Email.Valid {
+		m.editInputs[EditFieldEmail].SetValue(contact.Email.String)
+	} else {
+		m.editInputs[EditFieldEmail].SetValue("")
+	}
+	if contact.Phone.Valid {
+		m.editInputs[EditFieldPhone].SetValue(contact.Phone.String)
+	} else {
+		m.editInputs[EditFieldPhone].SetValue("")
+	}
+	if contact.Company.Valid {
+		m.editInputs[EditFieldCompany].SetValue(contact.Company.String)
+	} else {
+		m.editInputs[EditFieldCompany].SetValue("")
+	}
+	if contact.Notes.Valid {
+		m.editInputs[EditFieldNotes].SetValue(contact.Notes.String)
+	} else {
+		m.editInputs[EditFieldNotes].SetValue("")
+	}
+	if contact.Label.Valid {
+		m.editInputs[EditFieldLabel].SetValue(contact.Label.String)
+	} else {
+		m.editInputs[EditFieldLabel].SetValue("")
+	}
+	
+	// Set the relationship type index
+	m.editRelTypeIdx = 0 // Default to first type
+	if contact.RelationshipType != "" {
+		for i, rType := range RelationshipTypes[1:] { // Skip "all"
+			if rType == contact.RelationshipType {
+				m.editRelTypeIdx = i
+				break
+			}
+		}
+	}
+	
+	// Focus first field
+	m.editInputs[0].Focus()
+}
+
+// renderHelpOverlay renders the full help screen
+func (m Model) renderHelpOverlay() string {
+	width := 80
+	height := 30
+	
+	help := `Contacts TUI - Keyboard Shortcuts
+
+Navigation:
+  j/k, ↓/↑     Navigate contacts
+  g            Go to top
+  G            Go to bottom
+  q, Ctrl+C    Quit
+
+Contact Actions:
+  c            Mark as contacted
+  b            Bump (reset date without contact)
+  e            Edit contact details
+  n            Add note/interaction
+  a            Archive/unarchive contact
+  D            Delete contact (with confirmation)
+
+State Management:
+  s            Change contact state (ping, write, ok, etc.)
+  S            Toggle filter: show only non-ok states
+
+Filtering:
+  /            Search/filter contacts
+  r            Filter by relationship type
+  o            Toggle filter: show only overdue
+  A            Toggle: show/hide archived contacts
+  C            Clear all filters
+  Esc          Clear search filter / Close help
+
+Help:
+  ?            Toggle this help screen
+
+Press any key to close this help...`
+	
+	// Style the help content
+	content := lipgloss.NewStyle().
+		Width(width-4).
+		Height(height-4).
+		Padding(1).
+		Render(help)
+	
+	// Create the box
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("63")).

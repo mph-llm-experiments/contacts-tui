@@ -40,6 +40,7 @@ func (db *DB) ListContacts() ([]Contact, error) {
 			relationship_type, state, notes, label,
 			basic_memory_url, contacted_at, last_bump_date, bump_count,
 			follow_up_date, deadline_date,
+			archived, archived_at,
 			created_at, updated_at
 		FROM contacts
 		ORDER BY name
@@ -59,6 +60,7 @@ func (db *DB) ListContacts() ([]Contact, error) {
 			&c.RelationshipType, &c.State, &c.Notes, &c.Label,
 			&c.BasicMemoryURL, &c.ContactedAt, &c.LastBumpDate, &c.BumpCount,
 			&c.FollowUpDate, &c.DeadlineDate,
+			&c.Archived, &c.ArchivedAt,
 			&c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
@@ -107,6 +109,7 @@ func (db *DB) GetContact(id int) (*Contact, error) {
 			relationship_type, state, notes, label,
 			basic_memory_url, contacted_at, last_bump_date, bump_count,
 			follow_up_date, deadline_date,
+			archived, archived_at,
 			created_at, updated_at
 		FROM contacts
 		WHERE id = ?
@@ -118,6 +121,7 @@ func (db *DB) GetContact(id int) (*Contact, error) {
 		&c.RelationshipType, &c.State, &c.Notes, &c.Label,
 		&c.BasicMemoryURL, &c.ContactedAt, &c.LastBumpDate, &c.BumpCount,
 		&c.FollowUpDate, &c.DeadlineDate,
+		&c.Archived, &c.ArchivedAt,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -248,6 +252,60 @@ func (db *DB) BumpContact(contactID int) error {
 	`
 	if _, err := tx.Exec(logQuery, contactID); err != nil {
 		return fmt.Errorf("inserting bump log: %w", err)
+	}
+	
+	return tx.Commit()
+}
+// ArchiveContact archives a contact
+func (db *DB) ArchiveContact(contactID int) error {
+	query := `
+		UPDATE contacts 
+		SET archived = 1,
+		    archived_at = CURRENT_TIMESTAMP,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+	_, err := db.conn.Exec(query, contactID)
+	if err != nil {
+		return fmt.Errorf("archiving contact: %w", err)
+	}
+	return nil
+}
+
+// UnarchiveContact unarchives a contact
+func (db *DB) UnarchiveContact(contactID int) error {
+	query := `
+		UPDATE contacts 
+		SET archived = 0,
+		    archived_at = NULL,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+	_, err := db.conn.Exec(query, contactID)
+	if err != nil {
+		return fmt.Errorf("unarchiving contact: %w", err)
+	}
+	return nil
+}
+
+// DeleteContact permanently deletes a contact and all associated logs
+func (db *DB) DeleteContact(contactID int) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+	
+	// Delete interaction logs first (foreign key constraint)
+	_, err = tx.Exec(`DELETE FROM contact_interactions WHERE contact_id = ?`, contactID)
+	if err != nil {
+		return fmt.Errorf("deleting interaction logs: %w", err)
+	}
+	
+	// Delete the contact
+	_, err = tx.Exec(`DELETE FROM contacts WHERE id = ?`, contactID)
+	if err != nil {
+		return fmt.Errorf("deleting contact: %w", err)
 	}
 	
 	return tx.Commit()
