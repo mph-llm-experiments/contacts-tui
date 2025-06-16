@@ -2,6 +2,9 @@
 contacts-tui
 *.exe
 
+# Distribution directory
+dist/
+
 # Go build artifacts
 *.o
 *.a
@@ -29,3 +32,7 @@ go.work.sum
 *.swp
 *.swo
 *~
+
+# Database and config files
+contacts.db
+config.toml

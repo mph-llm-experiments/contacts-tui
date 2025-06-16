@@ -12,5 +12,4 @@ echo ""
 echo "Press Enter to start the TUI..."
 read
 
-cd /Users/mph/code/contacts-tui
 ./contacts-tui
