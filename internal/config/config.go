@@ -35,7 +35,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("getting home dir: %w", err)
 	}
 	
-	configPath := filepath.Join(homeDir, ".config", "contacts-tui", "config.toml")
+	configPath := filepath.Join(homeDir, ".config", "contacts", "config.toml")
 	return LoadFrom(configPath)
 }
 
@@ -84,7 +84,7 @@ func (c *Config) Save() error {
 		return fmt.Errorf("getting home dir: %w", err)
 	}
 	
-	configDir := filepath.Join(homeDir, ".config", "contacts-tui")
+	configDir := filepath.Join(homeDir, ".config", "contacts")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		return fmt.Errorf("creating config directory: %w", err)
 	}

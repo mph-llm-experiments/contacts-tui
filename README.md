@@ -4,7 +4,7 @@ Keyboard-driven terminal interface for contact management using Go and Bubble Te
 
 ## Configuration
 
-The application looks for configuration at `~/.config/contacts-tui/config.toml`. If no configuration file exists, it will use default values.
+The application looks for configuration at `~/.config/contacts/config.toml`. If no configuration file exists, it will use default values.
 
 ### Command-line Options
 

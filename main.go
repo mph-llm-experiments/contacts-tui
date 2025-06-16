@@ -73,7 +73,7 @@ func writeDefaultConfig() error {
 	}
 	
 	homeDir, _ := os.UserHomeDir()
-	fmt.Printf("Configuration file written to: %s/.config/contacts-tui/config.toml\n", homeDir)
+	fmt.Printf("Configuration file written to: %s/.config/contacts/config.toml\n", homeDir)
 	fmt.Printf("Default database path: %s\n", cfg.Database.Path)
 	fmt.Println("\nYou can now edit this file to customize your database location.")
 	return nil
