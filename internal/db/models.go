@@ -18,6 +18,8 @@ type Contact struct {
 	Label             sql.NullString
 	BasicMemoryURL    sql.NullString
 	ContactedAt       sql.NullTime
+	LastBumpDate      sql.NullTime
+	BumpCount         int
 	FollowUpDate      sql.NullTime
 	DeadlineDate      sql.NullTime
 	CreatedAt         time.Time
@@ -36,11 +38,27 @@ type Log struct {
 
 // IsOverdue checks if a contact is overdue based on relationship type
 func (c Contact) IsOverdue() bool {
-	if !c.ContactedAt.Valid {
-		return true // Never contacted
+	// Get the most recent interaction date (either contacted or bumped)
+	var lastInteraction sql.NullTime
+	
+	if c.ContactedAt.Valid && c.LastBumpDate.Valid {
+		// Use whichever is more recent
+		if c.ContactedAt.Time.After(c.LastBumpDate.Time) {
+			lastInteraction = c.ContactedAt
+		} else {
+			lastInteraction = c.LastBumpDate
+		}
+	} else if c.ContactedAt.Valid {
+		lastInteraction = c.ContactedAt
+	} else if c.LastBumpDate.Valid {
+		lastInteraction = c.LastBumpDate
 	}
 	
-	daysSince := time.Since(c.ContactedAt.Time).Hours() / 24
+	if !lastInteraction.Valid {
+		return true // Never contacted or bumped
+	}
+	
+	daysSince := time.Since(lastInteraction.Time).Hours() / 24
 	
 	switch c.RelationshipType {
 	case "close", "family":

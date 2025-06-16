@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -16,15 +15,7 @@ type DB struct {
 }
 
 // Open creates a new database connection
-func Open() (*DB, error) {
-	// Default to ~/.config/contacts/contacts.db
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("getting home dir: %w", err)
-	}
-	
-	dbPath := filepath.Join(homeDir, ".config", "contacts", "contacts.db")
-	
+func Open(dbPath string) (*DB, error) {
 	// Check if DB exists
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("database not found at %s", dbPath)
@@ -47,7 +38,7 @@ func (db *DB) ListContacts() ([]Contact, error) {
 		SELECT 
 			id, name, email, phone, company, 
 			relationship_type, state, notes, label,
-			basic_memory_url, contacted_at,
+			basic_memory_url, contacted_at, last_bump_date, bump_count,
 			follow_up_date, deadline_date,
 			created_at, updated_at
 		FROM contacts
@@ -66,7 +57,7 @@ func (db *DB) ListContacts() ([]Contact, error) {
 		err := rows.Scan(
 			&c.ID, &c.Name, &c.Email, &c.Phone, &c.Company,
 			&c.RelationshipType, &c.State, &c.Notes, &c.Label,
-			&c.BasicMemoryURL, &c.ContactedAt,
+			&c.BasicMemoryURL, &c.ContactedAt, &c.LastBumpDate, &c.BumpCount,
 			&c.FollowUpDate, &c.DeadlineDate,
 			&c.CreatedAt, &c.UpdatedAt,
 		)
@@ -114,7 +105,7 @@ func (db *DB) GetContact(id int) (*Contact, error) {
 		SELECT 
 			id, name, email, phone, company, 
 			relationship_type, state, notes, label,
-			basic_memory_url, contacted_at,
+			basic_memory_url, contacted_at, last_bump_date, bump_count,
 			follow_up_date, deadline_date,
 			created_at, updated_at
 		FROM contacts
@@ -125,7 +116,7 @@ func (db *DB) GetContact(id int) (*Contact, error) {
 	err := db.conn.QueryRow(query, id).Scan(
 		&c.ID, &c.Name, &c.Email, &c.Phone, &c.Company,
 		&c.RelationshipType, &c.State, &c.Notes, &c.Label,
-		&c.BasicMemoryURL, &c.ContactedAt,
+		&c.BasicMemoryURL, &c.ContactedAt, &c.LastBumpDate, &c.BumpCount,
 		&c.FollowUpDate, &c.DeadlineDate,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
@@ -228,4 +219,36 @@ func (db *DB) UpdateContact(contact Contact) error {
 	}
 	
 	return nil
+}
+
+// BumpContact updates the bump date and increments bump count
+func (db *DB) BumpContact(contactID int) error {
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("starting transaction: %w", err)
+	}
+	defer tx.Rollback()
+	
+	// Update contact's bump date and increment count
+	updateQuery := `
+		UPDATE contacts 
+		SET last_bump_date = CURRENT_TIMESTAMP,
+		    bump_count = bump_count + 1,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`
+	if _, err := tx.Exec(updateQuery, contactID); err != nil {
+		return fmt.Errorf("updating contact: %w", err)
+	}
+	
+	// Insert interaction log
+	logQuery := `
+		INSERT INTO contact_interactions (contact_id, interaction_date, interaction_type, notes)
+		VALUES (?, CURRENT_TIMESTAMP, 'bump', 'Contact reviewed and bumped')
+	`
+	if _, err := tx.Exec(logQuery, contactID); err != nil {
+		return fmt.Errorf("inserting bump log: %w", err)
+	}
+	
+	return tx.Commit()
 }

@@ -1,0 +1,12 @@
+# Contacts TUI Configuration
+
+[database]
+# Path to the SQLite database file
+# Default: ~/.config/contacts/contacts.db
+# 
+# You can use ~ for home directory expansion
+# Examples:
+#   path = "~/Dropbox/contacts/contacts.db"
+#   path = "/mnt/shared/contacts.db"
+#   path = "~/Documents/contacts.db"
+path = "~/.config/contacts/contacts.db"
