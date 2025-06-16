@@ -130,3 +130,64 @@ func (db *DB) GetContact(id int) (*Contact, error) {
 	
 	return &c, nil
 }
+
+// UpdateContactState updates the state of a contact
+func (db *DB) UpdateContactState(contactID int, state string) error {
+	query := `UPDATE contacts SET state = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+	_, err := db.conn.Exec(query, state, contactID)
+	if err != nil {
+		return fmt.Errorf("updating contact state: %w", err)
+	}
+	return nil
+}
+
+// AddInteractionNote adds a note without updating contacted_at
+func (db *DB) AddInteractionNote(contactID int, interactionType string, notes string) error {
+	if notes == "" {
+		return fmt.Errorf("notes cannot be empty")
+	}
+	
+	query := `
+		INSERT INTO contact_interactions (contact_id, interaction_date, interaction_type, notes)
+		VALUES (?, CURRENT_TIMESTAMP, ?, ?)
+	`
+	_, err := db.conn.Exec(query, contactID, interactionType, notes)
+	if err != nil {
+		return fmt.Errorf("inserting interaction note: %w", err)
+	}
+	
+	return nil
+}
+
+// GetContactInteractions retrieves recent interaction logs for a contact
+func (db *DB) GetContactInteractions(contactID int, limit int) ([]Log, error) {
+	query := `
+		SELECT 
+			id, contact_id, interaction_date, interaction_type, notes, created_at
+		FROM contact_interactions
+		WHERE contact_id = ?
+		ORDER BY interaction_date DESC
+		LIMIT ?
+	`
+	
+	rows, err := db.conn.Query(query, contactID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("querying interactions: %w", err)
+	}
+	defer rows.Close()
+	
+	var logs []Log
+	for rows.Next() {
+		var l Log
+		err := rows.Scan(
+			&l.ID, &l.ContactID, &l.InteractionDate, 
+			&l.InteractionType, &l.Notes, &l.CreatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("scanning log: %w", err)
+		}
+		logs = append(logs, l)
+	}
+	
+	return logs, rows.Err()
+}

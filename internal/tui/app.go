@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -19,8 +20,37 @@ type Model struct {
 	width      int
 	height     int
 	filterMode bool
+	stateMode  bool
+	stateSelected int
+	noteMode   bool
+	noteInput  textarea.Model
+	noteType   int
 	filter     textinput.Model
 	err        error
+}
+
+// Available contact states
+var ContactStates = []string{
+	"ping",
+	"invite", 
+	"write",
+	"followup",
+	"sked",
+	"notes",
+	"scheduled",
+	"timeout",
+	"ok",
+}
+
+// Available interaction types
+var InteractionTypes = []string{
+	"manual",
+	"email",
+	"call",
+	"meeting",
+	"in-person",
+	"social-media",
+	"text",
 }
 
 // Styles
@@ -31,6 +61,9 @@ var (
 	
 	overdueStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196"))
+	
+	stateStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")) // Orange for states
 	
 	labelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("241"))
@@ -50,11 +83,26 @@ func New(database *db.DB) (*Model, error) {
 	// Setup filter input
 	ti := textinput.New()
 	ti.Placeholder = "Filter contacts..."
+	ti.Width = 30 // Generous default width
+	ti.CharLimit = 50
+	ti.Prompt = "> " // Explicitly set the prompt
+	ti.TextStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("230"))
+	ti.PromptStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("238"))
+	
+	// Setup note input
+	ta := textarea.New()
+	ta.Placeholder = "Enter note..."
+	ta.SetHeight(4)
+	ta.SetWidth(50)
+	ta.CharLimit = 500
+	ta.ShowLineNumbers = false
 	
 	return &Model{
-		db:       database,
-		contacts: contacts,
-		filter:   ti,
+		db:        database,
+		contacts:  contacts,
+		filter:    ti,
+		noteInput: ta,
 	}, nil
 }
 
@@ -69,23 +117,127 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Update filter width when window size changes
+		if m.width > 0 {
+			listWidth := m.width / 3
+			m.filter.Width = listWidth - 4 // account for borders and padding
+		}
 		return m, nil
 		
 	case tea.KeyMsg:
+		// State mode handling
+		if m.stateMode {
+			switch msg.String() {
+			case "esc":
+				m.stateMode = false
+				m.stateSelected = 0
+				return m, nil
+			case "enter":
+				// Update the contact state
+				contacts := m.filteredContacts()
+				if len(contacts) > 0 && m.selected < len(contacts) {
+					contact := contacts[m.selected]
+					newState := ContactStates[m.stateSelected]
+					err := m.db.UpdateContactState(contact.ID, newState)
+					if err != nil {
+						m.err = err
+					} else {
+						// Reload contacts to show updated state
+						if newContacts, err := m.db.ListContacts(); err == nil {
+							m.contacts = newContacts
+							// Maintain selection within bounds after reload
+							m.selected = m.ensureValidSelection()
+						}
+					}
+				}
+				m.stateMode = false
+				m.stateSelected = 0
+				return m, nil
+			case "j", "down":
+				if m.stateSelected < len(ContactStates)-1 {
+					m.stateSelected++
+				}
+			case "k", "up":
+				if m.stateSelected > 0 {
+					m.stateSelected--
+				}
+			}
+			return m, nil
+		}
+		
+		// Note mode handling
+		if m.noteMode {
+			switch msg.String() {
+			case "esc":
+				m.noteMode = false
+				m.noteType = 0
+				m.noteInput.Reset()
+				return m, nil
+			case "enter":
+				// Save the note only if ctrl+enter or cmd+enter is pressed
+				if msg.Type == tea.KeyCtrlJ || msg.Type == tea.KeyCtrlM {
+					// Save the note
+					contacts := m.filteredContacts()
+					if len(contacts) > 0 && m.selected < len(contacts) {
+						contact := contacts[m.selected]
+						note := m.noteInput.Value()
+						if note != "" {
+							interactionType := InteractionTypes[m.noteType]
+							err := m.db.AddInteractionNote(contact.ID, interactionType, note)
+							if err != nil {
+								m.err = err
+							}
+						}
+					}
+					m.noteMode = false
+					m.noteType = 0
+					m.noteInput.Reset()
+					return m, nil
+				}
+			case "tab":
+				// Cycle through interaction types
+				m.noteType = (m.noteType + 1) % len(InteractionTypes)
+				return m, nil
+			}
+			
+			// Pass other keys to the note input
+			var cmd tea.Cmd
+			m.noteInput, cmd = m.noteInput.Update(msg)
+			return m, cmd
+		}
+		
 		// Filter mode handling
 		if m.filterMode {
 			switch msg.String() {
 			case "esc":
 				m.filterMode = false
 				m.filter.Reset()
+				m.selected = m.ensureValidSelection()
 				return m, nil
 			case "enter":
 				m.filterMode = false
+				m.selected = m.ensureValidSelection()
+				return m, nil
+			case "up":
+				// Allow navigation with arrow keys
+				if m.selected > 0 {
+					m.selected--
+				}
+				return m, nil
+			case "down":
+				// Allow navigation with arrow keys
+				if m.selected < len(m.filteredContacts())-1 {
+					m.selected++
+				}
 				return m, nil
 			}
 			
+			// Pass all other keys to the textinput
 			var cmd tea.Cmd
 			m.filter, cmd = m.filter.Update(msg)
+			
+			// Ensure selection is valid after filter change
+			m.selected = m.ensureValidSelection()
 			return m, cmd
 		}
 		// Normal mode handling
@@ -105,8 +257,71 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			
 		case "/":
 			m.filterMode = true
+			// Reset and configure the textinput
+			m.filter.Reset()
+			m.filter.SetValue("") // Explicitly set empty value
+			m.filter.Placeholder = "Filter contacts..."
+			m.filter.Prompt = "> "
+			// Set filter width
+			if m.width > 0 {
+				listWidth := m.width / 3
+				m.filter.Width = listWidth - 6
+			} else {
+				m.filter.Width = 25
+			}
 			m.filter.Focus()
-			return m, textinput.Blink
+			// Force an immediate render
+			return m, tea.Batch(textinput.Blink, tea.ClearScreen)
+			
+		case "esc":
+			// Clear filter and return to full list
+			if m.filter.Value() != "" {
+				m.filter.Reset()
+				m.selected = m.ensureValidSelection()
+				return m, nil
+			}
+			
+		case "s":
+			// Enter state selection mode
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				m.stateMode = true
+				m.stateSelected = 0
+				// If contact has a current state, select it
+				contact := contacts[m.selected]
+				if contact.State.Valid {
+					for i, state := range ContactStates {
+						if state == contact.State.String {
+							m.stateSelected = i
+							break
+						}
+					}
+				} else {
+					// Default to "ok" if no state set
+					for i, state := range ContactStates {
+						if state == "ok" {
+							m.stateSelected = i
+							break
+						}
+					}
+				}
+			}
+			
+		case "n":
+			// Enter note mode
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				m.noteMode = true
+				m.noteType = 0 // Default to "manual"
+				m.noteInput.Reset()
+				m.noteInput.Focus()
+				// Set note input width based on detail pane width
+				if m.width > 0 {
+					detailWidth := m.width - (m.width / 3) - 3
+					m.noteInput.SetWidth(detailWidth - 10)
+				}
+				return m, textarea.Blink
+			}
 			
 		case "c":
 			// Mark as contacted
@@ -120,6 +335,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Reload contacts to show updated state
 					if newContacts, err := m.db.ListContacts(); err == nil {
 						m.contacts = newContacts
+						// Maintain selection within bounds after reload
+						m.selected = m.ensureValidSelection()
 					}
 				}
 			}
@@ -147,6 +364,21 @@ func (m Model) filteredContacts() []db.Contact {
 	}
 	
 	return filtered
+}
+
+// ensureValidSelection ensures the current selection is within bounds
+func (m Model) ensureValidSelection() int {
+	contacts := m.filteredContacts()
+	if len(contacts) == 0 {
+		return 0
+	}
+	if m.selected >= len(contacts) {
+		return len(contacts) - 1
+	}
+	if m.selected < 0 {
+		return 0
+	}
+	return m.selected
 }
 // View renders the UI
 func (m Model) View() string {
@@ -178,7 +410,19 @@ func (m Model) View() string {
 	// Add help line
 	help := m.renderHelp()
 	
-	return lipgloss.JoinVertical(lipgloss.Left, content, help)
+	view := lipgloss.JoinVertical(lipgloss.Left, content, help)
+	
+	// Overlay state selection if in state mode
+	if m.stateMode {
+		return m.renderStateSelection()
+	}
+	
+	// Overlay note input if in note mode
+	if m.noteMode {
+		return m.renderNoteInput()
+	}
+	
+	return view
 }
 
 // renderList renders the contact list
@@ -186,7 +430,13 @@ func (m Model) renderList(width, height int) string {
 	var lines []string
 	
 	if m.filterMode {
-		lines = append(lines, m.filter.View())
+		// Always show the filter when in filter mode, even if empty
+		filterView := m.filter.View()
+		if filterView == "" {
+			// Fallback if View() returns empty
+			filterView = "> " + m.filter.Placeholder
+		}
+		lines = append(lines, filterView)
 		lines = append(lines, "")
 		height -= 2
 	}
@@ -212,9 +462,11 @@ func (m Model) renderList(width, height int) string {
 		// Build the display line
 		var line string
 		
-		// Add overdue indicator or spacing
+		// Add overdue indicator or state indicator or spacing
 		if c.IsOverdue() {
 			line = "* "
+		} else if c.State.Valid && c.State.String != "ok" {
+			line = stateStyle.Render("•") + " "
 		} else {
 			line = "  "
 		}
@@ -229,7 +481,7 @@ func (m Model) renderList(width, height int) string {
 		
 		// Apply selection styling to entire line if selected
 		if i == m.selected {
-			line = selectedStyle.Width(width-2).Render(line)
+			line = selectedStyle.Render(line)
 		} else if c.IsOverdue() {
 			// For non-selected overdue contacts, just color the asterisk
 			line = overdueStyle.Render("*") + line[1:]
@@ -292,6 +544,27 @@ func (m Model) renderDetail(width, height int) string {
 	if c.Notes.Valid && c.Notes.String != "" {
 		lines = append(lines, "Notes:")
 		lines = append(lines, c.Notes.String)
+		lines = append(lines, "")
+	}
+	
+	// Recent Interactions
+	interactions, err := m.db.GetContactInteractions(c.ID, 5)
+	if err == nil && len(interactions) > 0 {
+		lines = append(lines, "Recent Interactions:")
+		lines = append(lines, strings.Repeat("─", width-2))
+		for _, log := range interactions {
+			dateStr := log.InteractionDate.Format("2006-01-02 15:04")
+			typeStr := fmt.Sprintf("[%s]", log.InteractionType)
+			lines = append(lines, fmt.Sprintf("%s %s", dateStr, typeStr))
+			if log.Notes.Valid && log.Notes.String != "" {
+				// Wrap long notes
+				noteLines := wrapText(log.Notes.String, width-4)
+				for _, noteLine := range noteLines {
+					lines = append(lines, "  "+noteLine)
+				}
+			}
+			lines = append(lines, "")
+		}
 	}
 	
 	return strings.Join(lines, "\n")
@@ -299,9 +572,138 @@ func (m Model) renderDetail(width, height int) string {
 
 // renderHelp renders the help line
 func (m Model) renderHelp() string {
-	if m.filterMode {
-		return " Type to filter • Enter to confirm • Esc to cancel"
+	if m.stateMode {
+		return " j/k: navigate • Enter: confirm • Esc: cancel"
 	}
 	
-	return " j/k: navigate • /: filter • c: mark contacted • q: quit"
+	if m.noteMode {
+		return " Type note • Tab: change type • Ctrl+Enter: save • Esc: cancel"
+	}
+	
+	if m.filterMode {
+		return " Type to filter • ↑/↓: navigate • Enter: confirm • Esc: cancel"
+	}
+	
+	if m.filter.Value() != "" {
+		return " j/k: navigate • /: filter • c: contacted • s: state • n: note • Esc: clear filter • q: quit"
+	}
+	
+	return " j/k: navigate • /: filter • c: contacted • s: state • n: note • q: quit"
+}
+
+// renderStateSelection renders the state selection overlay
+func (m Model) renderStateSelection() string {
+	contacts := m.filteredContacts()
+	if len(contacts) == 0 || m.selected >= len(contacts) {
+		return "No contact selected"
+	}
+	
+	contact := contacts[m.selected]
+	
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Set state for %s:", contact.Name))
+	lines = append(lines, "")
+	
+	for i, state := range ContactStates {
+		line := fmt.Sprintf("  %s", state)
+		if i == m.stateSelected {
+			line = selectedStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+	
+	lines = append(lines, "")
+	lines = append(lines, "Press Enter to confirm, Esc to cancel")
+	
+	// Create a bordered box and center it
+	content := strings.Join(lines, "\n")
+	box := borderStyle.
+		Padding(1).
+		Background(lipgloss.Color("235")).
+		Render(content)
+	
+	// Center the box on the screen
+	centered := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
+	
+	return centered
+}
+
+// renderNoteInput renders the note input overlay
+func (m Model) renderNoteInput() string {
+	contacts := m.filteredContacts()
+	if len(contacts) == 0 || m.selected >= len(contacts) {
+		return "No contact selected"
+	}
+	
+	contact := contacts[m.selected]
+	
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Add note for %s:", contact.Name))
+	lines = append(lines, "")
+	
+	// Show interaction type selector
+	lines = append(lines, "Type: ")
+	typeSelector := ""
+	for i, iType := range InteractionTypes {
+		if i == m.noteType {
+			typeSelector += selectedStyle.Render(fmt.Sprintf("[%s]", iType)) + " "
+		} else {
+			typeSelector += fmt.Sprintf(" %s  ", iType)
+		}
+	}
+	lines = append(lines, typeSelector)
+	lines = append(lines, "")
+	
+	// Show note input
+	lines = append(lines, m.noteInput.View())
+	lines = append(lines, "")
+	lines = append(lines, "Tab: change type • Ctrl+Enter: save • Esc: cancel")
+	
+	// Create a bordered box and center it
+	content := strings.Join(lines, "\n")
+	box := borderStyle.
+		Padding(1).
+		Background(lipgloss.Color("235")).
+		Render(content)
+	
+	// Center the box on the screen
+	centered := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
+	
+	return centered
+}
+
+// wrapText wraps text to fit within the specified width
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+	
+	var lines []string
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return []string{}
+	}
+	
+	currentLine := words[0]
+	for _, word := range words[1:] {
+		if len(currentLine)+1+len(word) <= width {
+			currentLine += " " + word
+		} else {
+			lines = append(lines, currentLine)
+			currentLine = word
+		}
+	}
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+	
+	return lines
 }
