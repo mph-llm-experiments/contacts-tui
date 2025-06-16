@@ -42,6 +42,10 @@ type Model struct {
 	editField      int // Which field is being edited
 	editInputs     []textinput.Model
 	editRelTypeIdx int // Selected relationship type in edit mode
+	
+	// Bump confirmation mode
+	bumpConfirmMode bool
+	bumpContactID   int
 }
 
 // Available contact states
@@ -217,6 +221,32 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		}
+		
+		// Bump confirmation mode handling
+		if m.bumpConfirmMode {
+			switch msg.String() {
+			case "y", "Y":
+				// Perform the bump
+				err := m.db.BumpContact(m.bumpContactID)
+				if err != nil {
+					m.err = err
+				} else {
+					// Reload contacts to show updated state
+					if newContacts, err := m.db.ListContacts(); err == nil {
+						m.contacts = newContacts
+						m.selected = m.ensureValidSelection()
+					}
+				}
+				m.bumpConfirmMode = false
+				m.bumpContactID = 0
+				return m, nil
+			default:
+				// Any other key cancels
+				m.bumpConfirmMode = false
+				m.bumpContactID = 0
+				return m, nil
+			}
 		}
 		
 		// Edit mode handling
@@ -554,6 +584,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selected = m.ensureValidSelection()
 			return m, nil
 			
+		case "b":
+			// Bump contact - enter confirmation mode
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				contact := contacts[m.selected]
+				m.bumpConfirmMode = true
+				m.bumpContactID = contact.ID
+			}
+			return m, nil
+			
 		case "c":
 			// Mark as contacted
 			contacts := m.filteredContacts()
@@ -762,6 +802,11 @@ func (m Model) View() string {
 		return m.renderEditMode()
 	}
 	
+	// Overlay bump confirmation if active
+	if m.bumpConfirmMode {
+		return m.renderBumpConfirmation()
+	}
+	
 	return view
 }
 
@@ -896,6 +941,19 @@ func (m Model) renderDetail(width, height int) string {
 		lines = append(lines, "Last Contact: Never")
 	}
 	
+	// Show bump info if contact has been bumped
+	if c.BumpCount > 0 {
+		bumpInfo := fmt.Sprintf("Bumped: %d time", c.BumpCount)
+		if c.BumpCount > 1 {
+			bumpInfo += "s"
+		}
+		if c.LastBumpDate.Valid {
+			days := int(time.Since(c.LastBumpDate.Time).Hours() / 24)
+			bumpInfo += fmt.Sprintf(" (last: %d days ago)", days)
+		}
+		lines = append(lines, bumpInfo)
+	}
+	
 	lines = append(lines, "")
 	
 	// Notes
@@ -930,6 +988,10 @@ func (m Model) renderDetail(width, height int) string {
 
 // renderHelp renders the help line
 func (m Model) renderHelp() string {
+	if m.bumpConfirmMode {
+		return " y: confirm bump • any other key: cancel"
+	}
+	
 	if m.typeFilterMode {
 		return " j/k: navigate • Enter: select • Esc: cancel"
 	}
@@ -950,7 +1012,7 @@ func (m Model) renderHelp() string {
 		return " Type to filter • ↑/↓: navigate • Enter: confirm • Esc: cancel"
 	}
 	
-	help := " j/k: navigate • /: filter • c: contacted • e: edit • s: state • n: note"
+	help := " j/k: navigate • /: filter • c: contacted • b: bump • e: edit • s: state • n: note"
 	
 	// Add smart filter shortcuts
 	help += " • S: state • o: overdue • r: type"
@@ -1195,4 +1257,44 @@ func wrapText(text string, width int) []string {
 	}
 	
 	return lines
+}
+
+// renderBumpConfirmation renders the bump confirmation prompt
+func (m Model) renderBumpConfirmation() string {
+	contacts := m.filteredContacts()
+	var contactName string
+	
+	// Find the contact being bumped
+	for _, c := range contacts {
+		if c.ID == m.bumpContactID {
+			contactName = c.Name
+			break
+		}
+	}
+	
+	// Build the confirmation prompt
+	width := 60
+	height := 7
+	
+	prompt := fmt.Sprintf("Bump contact '%s'? (y/n)", contactName)
+	
+	content := lipgloss.NewStyle().
+		Width(width-4).
+		Height(height-4).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(prompt)
+	
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Width(width).
+		Height(height).
+		Render(content)
+	
+	// Center on screen
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
 }
