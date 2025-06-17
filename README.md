@@ -61,6 +61,30 @@ The application looks for configuration at `~/.config/contacts/config.toml`. If 
 
 - `contacts-tui -write-config` - Generate a default configuration file
 - `contacts-tui -show-config` - Display the current configuration
+- `contacts-tui -init` - Initialize database and configuration for first-time setup
+- `contacts-tui --database <path>` - Use a specific database file (overrides config)
+- `contacts-tui --create-fixtures` - Create a test database with sample data
+- `contacts-tui --fixtures-path <path>` - Specify path for fixtures database
+
+### Testing with Fixtures
+
+For testing or demonstration purposes, you can create a fixtures database with realistic sample data:
+
+```bash
+# Create fixtures database with default name (fixtures.db)
+contacts-tui --create-fixtures
+
+# Create fixtures database at custom location
+contacts-tui --create-fixtures --fixtures-path test-data.db
+
+# Use the fixtures database
+contacts-tui --database fixtures.db
+```
+
+The fixtures database includes:
+- Contacts across all relationship types (work, family, network, social, etc.)
+- Various contact states and interaction histories
+- Sample data for testing different features
 
 ### Database Location
 

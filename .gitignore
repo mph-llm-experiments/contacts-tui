@@ -36,3 +36,8 @@ go.work.sum
 # Database and config files
 contacts.db
 config.toml
+
+# Test/fixture databases
+fixtures.db
+test-*.db
+*-fixtures.db

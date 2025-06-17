@@ -16,11 +16,26 @@ import (
 func main() {
 	// Parse command line flags
 	var (
-		writeConfig = flag.Bool("write-config", false, "Write default configuration file")
-		showConfig  = flag.Bool("show-config", false, "Show current configuration")
-		initDB      = flag.Bool("init", false, "Initialize database and configuration for first-time setup")
+		writeConfig    = flag.Bool("write-config", false, "Write default configuration file")
+		showConfig     = flag.Bool("show-config", false, "Show current configuration")
+		initDB         = flag.Bool("init", false, "Initialize database and configuration for first-time setup")
+		databasePath   = flag.String("database", "", "Path to database file (overrides config)")
+		createFixtures = flag.Bool("create-fixtures", false, "Create fixtures database for testing")
+		fixturesPath   = flag.String("fixtures-path", "", "Path for fixtures database (default: ./fixtures.db)")
 	)
 	flag.Parse()
+	
+	// Handle create-fixtures command
+	if *createFixtures {
+		fixturesDB := "./fixtures.db"
+		if *fixturesPath != "" {
+			fixturesDB = *fixturesPath
+		}
+		if err := createFixturesDatabase(fixturesDB); err != nil {
+			log.Fatal("Error creating fixtures:", err)
+		}
+		return
+	}
 	
 	// Handle init command
 	if *initDB {
@@ -42,6 +57,11 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatal("Error loading config:", err)
+	}
+	
+	// Override database path if specified via CLI
+	if *databasePath != "" {
+		cfg.Database.Path = *databasePath
 	}
 	
 	if *showConfig {
@@ -82,6 +102,37 @@ func main() {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func createFixturesDatabase(dbPath string) error {
+	fmt.Printf("Creating fixtures database at %s...\n", dbPath)
+	
+	// Check if database already exists
+	if _, err := os.Stat(dbPath); err == nil {
+		fmt.Printf("Database already exists at %s\n", dbPath)
+		fmt.Print("Overwrite? (y/N): ")
+		var response string
+		fmt.Scanln(&response)
+		if response != "y" && response != "Y" {
+			fmt.Println("Cancelled.")
+			return nil
+		}
+		// Remove existing database
+		if err := os.Remove(dbPath); err != nil {
+			return fmt.Errorf("removing existing database: %w", err)
+		}
+	}
+	
+	// Create fixtures database
+	if err := db.CreateFixturesDatabase(dbPath); err != nil {
+		return fmt.Errorf("creating fixtures database: %w", err)
+	}
+	
+	fmt.Printf("✓ Created fixtures database with sample data: %s\n", dbPath)
+	fmt.Println("\nTo use this database, run:")
+	fmt.Printf("  contacts-tui --database %s\n", dbPath)
+	
+	return nil
 }
 
 func writeDefaultConfig() error {
