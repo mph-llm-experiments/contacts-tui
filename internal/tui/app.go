@@ -202,9 +202,15 @@ const (
 
 // Styles
 var (
+	// Contact list selection - no background, just bold and bright
 	selectedStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("62")).
-			Foreground(lipgloss.Color("230"))
+			Bold(true).
+			Foreground(lipgloss.Color("15")) // Bright white
+	
+	// Note type selector style - no background, just bold brackets
+	noteTypeSelectorStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("214")) // Orange
 	
 	overdueStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196"))
@@ -1635,28 +1641,19 @@ func (m Model) renderList(width, height int) string {
 		// Now apply styling
 		var line string
 		if i == m.selected {
-			// For selected lines, pad to full width and apply selection style
-			paddedContent := content
-			contentWidth := len(prefix) + lipgloss.Width(c.Name)
-			if c.Label.Valid {
-				label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
-				contentWidth += len(" [") + lipgloss.Width(label) + len("]")
-			}
-			if contentWidth < width-2 {
-				paddedContent = content + strings.Repeat(" ", width-2-contentWidth)
-			}
-			line = selectedStyle.Render(paddedContent)
+			// For selected lines, just make them bold and bright - no background
+			line = selectedStyle.Render("> " + content)
 		} else {
-			// For non-selected lines, apply individual styles
-			line = ""
+			// For non-selected lines, apply individual styles with space prefix
+			line = "  " // Space for the selection indicator
 			
 			// Apply overdue or state styling
 			if c.IsOverdue() {
-				line = overdueStyle.Render("*") + " "
+				line += overdueStyle.Render("*") + " "
 			} else if c.State.Valid && c.State.String != "ok" {
-				line = stateStyle.Render("•") + " "
+				line += stateStyle.Render("•") + " "
 			} else {
-				line = "  "
+				line += "  "
 			}
 			
 			// Apply style indicator styling
@@ -1876,7 +1873,6 @@ func (m Model) renderStateSelection() string {
 	content := strings.Join(lines, "\n")
 	box := borderStyle.
 		Padding(1).
-		Background(lipgloss.Color("235")).
 		Render(content)
 	
 	// Center the box on the screen
@@ -1907,7 +1903,7 @@ func (m Model) renderNoteInput() string {
 	typeSelector := ""
 	for i, iType := range InteractionTypes {
 		if i == m.noteType {
-			typeSelector += selectedStyle.Render(fmt.Sprintf("[%s]", iType)) + " "
+			typeSelector += noteTypeSelectorStyle.Render(fmt.Sprintf("[%s]", iType)) + " "
 		} else {
 			typeSelector += fmt.Sprintf(" %s  ", iType)
 		}
@@ -1924,7 +1920,6 @@ func (m Model) renderNoteInput() string {
 	content := strings.Join(lines, "\n")
 	box := borderStyle.
 		Padding(1).
-		Background(lipgloss.Color("235")).
 		Render(content)
 	
 	// Center the box on the screen
@@ -1980,7 +1975,6 @@ func (m Model) renderTypeSelection() string {
 	content := strings.Join(lines, "\n")
 	box := borderStyle.
 		Padding(1).
-		Background(lipgloss.Color("235")).
 		Render(content)
 	
 	// Center the box on the screen
@@ -2054,7 +2048,6 @@ func (m Model) renderEditMode() string {
 	box := borderStyle.
 		Padding(1).
 		Width(60).
-		Background(lipgloss.Color("235")).
 		Render(content)
 	
 	// Center the box on the screen
