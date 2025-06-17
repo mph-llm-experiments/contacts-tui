@@ -26,7 +26,14 @@ func Open(dbPath string) (*DB, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 	
-	return &DB{conn: conn}, nil
+	db := &DB{conn: conn}
+	
+	// Run any pending migrations
+	if err := db.RunMigrations(); err != nil {
+		return nil, fmt.Errorf("running migrations: %w", err)
+	}
+	
+	return db, nil
 }
 
 // Close closes the database connection
