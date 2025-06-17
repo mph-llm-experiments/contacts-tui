@@ -343,3 +343,27 @@ func (db *DB) AddContact(contact Contact) (int64, error) {
 	
 	return id, nil
 }
+
+// UpdateInteraction updates an existing interaction
+func (db *DB) UpdateInteraction(interactionID int, interactionType string, notes string) error {
+	query := `
+		UPDATE contact_interactions 
+		SET interaction_type = ?, notes = ?
+		WHERE id = ?
+	`
+	_, err := db.conn.Exec(query, interactionType, notes, interactionID)
+	if err != nil {
+		return fmt.Errorf("updating interaction: %w", err)
+	}
+	return nil
+}
+
+// DeleteInteraction deletes an interaction by ID
+func (db *DB) DeleteInteraction(interactionID int) error {
+	query := `DELETE FROM contact_interactions WHERE id = ?`
+	_, err := db.conn.Exec(query, interactionID)
+	if err != nil {
+		return fmt.Errorf("deleting interaction: %w", err)
+	}
+	return nil
+}

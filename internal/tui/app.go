@@ -61,6 +61,15 @@ type Model struct {
 	newContactField  int // Which field is being edited
 	newContactInputs []textinput.Model
 	newContactRelTypeIdx int // Selected relationship type for new contact
+	
+	// Interaction editing mode
+	interactionEditMode bool
+	selectedInteraction int // Index of selected interaction in the list
+	interactions        []db.Log // Current contact's interactions
+	interactionEditInput textarea.Model
+	interactionEditType  int // Selected interaction type
+	interactionDeleteConfirm bool
+	interactionToDelete int // ID of interaction to delete
 }
 
 // Available contact states
@@ -205,6 +214,14 @@ func New(database *db.DB) (*Model, error) {
 		}
 	}
 	
+	// Setup interaction edit textarea
+	interactionTA := textarea.New()
+	interactionTA.Placeholder = "Edit interaction..."
+	interactionTA.SetHeight(4)
+	interactionTA.SetWidth(50)
+	interactionTA.CharLimit = 500
+	interactionTA.ShowLineNumbers = false
+	
 	return &Model{
 		db:         database,
 		contacts:   contacts,
@@ -212,6 +229,7 @@ func New(database *db.DB) (*Model, error) {
 		noteInput:  ta,
 		editInputs: editInputs,
 		newContactInputs: newContactInputs,
+		interactionEditInput: interactionTA,
 	}, nil
 }
 
@@ -651,6 +669,145 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		
+		// Interaction edit mode handling
+		if m.interactionEditMode {
+			if m.interactionDeleteConfirm {
+				// Delete confirmation mode
+				switch msg.String() {
+				case "y":
+					// Confirm delete
+					if m.interactionToDelete > 0 {
+						err := m.db.DeleteInteraction(m.interactionToDelete)
+						if err != nil {
+							m.err = err
+						} else {
+							// Reload interactions
+							contacts := m.filteredContacts()
+							if len(contacts) > 0 && m.selected < len(contacts) {
+								contact := contacts[m.selected]
+								if interactions, err := m.db.GetContactInteractions(contact.ID, 20); err == nil {
+									m.interactions = interactions
+									// Adjust selection if needed
+									if m.selectedInteraction >= len(m.interactions) {
+										m.selectedInteraction = len(m.interactions) - 1
+									}
+									if m.selectedInteraction < 0 {
+										// No more interactions, exit mode
+										m.interactionEditMode = false
+									}
+								}
+							}
+						}
+					}
+					m.interactionDeleteConfirm = false
+					m.interactionToDelete = 0
+					return m, nil
+				default:
+					// Cancel delete
+					m.interactionDeleteConfirm = false
+					m.interactionToDelete = 0
+					return m, nil
+				}
+			}
+			
+			// Check if we're editing an interaction
+			if m.interactionEditInput.Focused() {
+				switch msg.String() {
+				case "esc":
+					// Cancel edit
+					m.interactionEditInput.Blur()
+					m.interactionEditInput.Reset()
+					return m, nil
+				case "tab":
+					// Cycle through interaction types
+					m.interactionEditType = (m.interactionEditType + 1) % len(InteractionTypes)
+					return m, nil
+				case "enter":
+					// Save on ctrl+enter or cmd+enter
+					if msg.Type == tea.KeyCtrlJ || msg.Type == tea.KeyCtrlM {
+						// Save the edit
+						if m.selectedInteraction < len(m.interactions) {
+							interaction := m.interactions[m.selectedInteraction]
+							notes := m.interactionEditInput.Value()
+							interactionType := InteractionTypes[m.interactionEditType]
+							err := m.db.UpdateInteraction(interaction.ID, interactionType, notes)
+							if err != nil {
+								m.err = err
+							} else {
+								// Reload interactions
+								contacts := m.filteredContacts()
+								if len(contacts) > 0 && m.selected < len(contacts) {
+									contact := contacts[m.selected]
+									if interactions, err := m.db.GetContactInteractions(contact.ID, 20); err == nil {
+										m.interactions = interactions
+									}
+								}
+							}
+						}
+						m.interactionEditInput.Blur()
+						m.interactionEditInput.Reset()
+						return m, nil
+					}
+				}
+				// Pass other keys to the textarea
+				var cmd tea.Cmd
+				m.interactionEditInput, cmd = m.interactionEditInput.Update(msg)
+				return m, cmd
+			}
+			
+			// Navigation mode
+			switch msg.String() {
+			case "esc", "q":
+				// Exit interaction mode
+				m.interactionEditMode = false
+				m.selectedInteraction = 0
+				m.interactions = nil
+				return m, nil
+			case "j", "down":
+				if m.selectedInteraction < len(m.interactions)-1 {
+					m.selectedInteraction++
+				}
+				return m, nil
+			case "k", "up":
+				if m.selectedInteraction > 0 {
+					m.selectedInteraction--
+				}
+				return m, nil
+			case "e":
+				// Edit selected interaction
+				if m.selectedInteraction < len(m.interactions) {
+					interaction := m.interactions[m.selectedInteraction]
+					m.interactionEditInput.Reset()
+					if interaction.Notes.Valid {
+						m.interactionEditInput.SetValue(interaction.Notes.String)
+					}
+					// Find current interaction type
+					for i, iType := range InteractionTypes {
+						if iType == interaction.InteractionType {
+							m.interactionEditType = i
+							break
+						}
+					}
+					m.interactionEditInput.Focus()
+					// Set width
+					if m.width > 0 {
+						detailWidth := m.width - (m.width / 3) - 3
+						m.interactionEditInput.SetWidth(detailWidth - 10)
+					}
+					return m, textarea.Blink
+				}
+				return m, nil
+			case "d":
+				// Delete selected interaction
+				if m.selectedInteraction < len(m.interactions) {
+					m.interactionDeleteConfirm = true
+					m.interactionToDelete = m.interactions[m.selectedInteraction].ID
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+		
 		// Filter mode handling
 		if m.filterMode {
 			switch msg.String() {
@@ -903,6 +1060,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.deleteContactName = contact.Name
 			}
 			return m, nil
+			
+		case "i":
+			// Enter interaction view/edit mode
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				contact := contacts[m.selected]
+				// Load interactions for this contact
+				interactions, err := m.db.GetContactInteractions(contact.ID, 20) // Get more interactions
+				if err == nil && len(interactions) > 0 {
+					m.interactionEditMode = true
+					m.selectedInteraction = 0
+					m.interactions = interactions
+					m.interactionEditInput.Reset()
+					m.interactionEditType = 0
+				}
+			}
+			return m, nil
 		}
 	}
 	
@@ -1062,6 +1236,11 @@ func (m Model) View() string {
 	// Overlay help if active
 	if m.showHelp {
 		return m.renderHelpOverlay()
+	}
+	
+	// Overlay interaction edit mode if active
+	if m.interactionEditMode {
+		return m.renderInteractionEditMode()
 	}
 	
 	return view
@@ -1663,6 +1842,7 @@ Contact Actions:
   b            Bump (reset date without contact)
   e            Edit contact details
   n            Add note/interaction
+  i            View/edit interaction history
   a            Archive/unarchive contact
   D            Delete contact (with confirmation)
 
@@ -1796,6 +1976,102 @@ func (m Model) renderNewContactMode() string {
 		BorderForeground(lipgloss.Color("63")).
 		Width(width).
 		Height(totalHeight).
+		Padding(1).
+		Render(content)
+	
+	// Center on screen
+	return lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(box)
+}
+
+
+// renderInteractionEditMode renders the interaction view/edit overlay
+func (m Model) renderInteractionEditMode() string {
+	width := 80
+	height := 30
+	
+	content := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("32")).
+		MarginBottom(1).
+		Render("Interaction History") + "\n\n"
+	
+	// Show interactions
+	for i, interaction := range m.interactions {
+		// Date and type
+		dateStr := interaction.InteractionDate.Format("2006-01-02 15:04")
+		typeStr := fmt.Sprintf("[%s]", interaction.InteractionType)
+		
+		// Selection indicator
+		var prefix string
+		if i == m.selectedInteraction {
+			prefix = selectedStyle.Render("> ")
+		} else {
+			prefix = "  "
+		}
+		
+		content += prefix + dateStr + " " + typeStr + "\n"
+		
+		// Notes (indented)
+		if interaction.Notes.Valid && interaction.Notes.String != "" {
+			noteLines := wrapText(interaction.Notes.String, width-8)
+			for _, line := range noteLines {
+				content += "    " + line + "\n"
+			}
+		}
+		content += "\n"
+	}
+	
+	// If editing, show the edit textarea
+	if m.interactionEditInput.Focused() {
+		content += "\n" + lipgloss.NewStyle().
+			Bold(true).
+			Render("Editing - Type: " + InteractionTypes[m.interactionEditType]) + "\n"
+		content += m.interactionEditInput.View() + "\n"
+	}
+	
+	// Show delete confirmation if active
+	if m.interactionDeleteConfirm {
+		content += "\n" + lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Bold(true).
+			Render("Delete this interaction? (y/n)")
+	}
+	
+	// Instructions
+	var instructions string
+	if m.interactionEditInput.Focused() {
+		instructions = "Tab: change type • Ctrl+Enter: save • Esc: cancel"
+	} else if m.interactionDeleteConfirm {
+		instructions = "y: confirm delete • any key: cancel"
+	} else {
+		instructions = "j/k: navigate • e: edit • d: delete • Esc: exit"
+	}
+	
+	content += "\n" + lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241")).
+		Render(instructions)
+	
+	// Create scrollable view if content is too long
+	contentHeight := strings.Count(content, "\n") + 1
+	if contentHeight > height-4 {
+		// Simple truncation for now - could implement proper scrolling later
+		lines := strings.Split(content, "\n")
+		visibleLines := height - 6
+		if len(lines) > visibleLines {
+			content = strings.Join(lines[:visibleLines], "\n") + "\n..."
+		}
+	}
+	
+	// Create the box
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Width(width).
+		Height(height).
 		Padding(1).
 		Render(content)
 	
