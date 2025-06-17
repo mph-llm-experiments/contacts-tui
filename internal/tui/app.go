@@ -55,6 +55,7 @@ type Model struct {
 	
 	// Help overlay mode
 	showHelp bool
+	helpScrollOffset int
 	
 	// New contact mode
 	newContactMode   bool
@@ -963,11 +964,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selected = m.ensureValidSelection()
 			return m, cmd
 		}
+		
+		// Help mode handling
+		if m.showHelp {
+			switch msg.String() {
+			case "esc", "?", "q":
+				m.showHelp = false
+				m.helpScrollOffset = 0
+				return m, nil
+			case "j", "down":
+				m.helpScrollOffset++
+				return m, nil
+			case "k", "up":
+				if m.helpScrollOffset > 0 {
+					m.helpScrollOffset--
+				}
+				return m, nil
+			case "g":
+				m.helpScrollOffset = 0
+				return m, nil
+			case "G":
+				// This will be adjusted in renderHelpOverlay to max scroll
+				m.helpScrollOffset = 999
+				return m, nil
+			}
+			// Ignore other keys in help mode
+			return m, nil
+		}
+		
 		// Normal mode handling
 		switch msg.String() {
 		case "?":
 			// Toggle help overlay
 			m.showHelp = !m.showHelp
+			if m.showHelp {
+				m.helpScrollOffset = 0
+			}
 			return m, nil
 			
 		case "+", "N":
@@ -2050,53 +2082,119 @@ func (m Model) renderStyleMode() string {
 	return centeredStyle.Render(boxStyle.Render(content))
 }
 
-// renderHelpOverlay renders the full help screen
+// renderHelpOverlay renders the full help screen with scrolling support
 func (m Model) renderHelpOverlay() string {
 	width := 80
 	height := 30
 	
-	help := `Contacts TUI - Keyboard Shortcuts
-
-Navigation:
-  j/k, ↓/↑     Navigate contacts
-  g            Go to top
-  G            Go to bottom
-  q, Ctrl+C    Quit
-
-Contact Actions:
-  +, N         Create new contact
-  c            Mark as contacted
-  b            Bump (reset date without contact)
-  e            Edit contact details
-  n            Add note/interaction
-  i            View/edit interaction history
-  a            Archive/unarchive contact
-  m            Change contact style (periodic/ambient/triggered)
-  D            Delete contact (with confirmation)
-
-State Management:
-  s            Change contact state (ping, write, ok, etc.)
-  S            Toggle filter: show only non-ok states
-
-Filtering:
-  /            Search/filter contacts
-  r            Filter by relationship type
-  o            Toggle filter: show only overdue
-  A            Toggle: show/hide archived contacts
-  C            Clear all active filters
-  Esc          Clear search filter / Close help
-
-Help:
-  ?            Toggle this help screen
-
-Press any key to close this help...`
+	helpLines := []string{
+		"Contacts TUI - Keyboard Shortcuts",
+		"",
+		"Navigation:",
+		"  j/k, ↓/↑     Navigate contacts",
+		"  g            Go to top",
+		"  G            Go to bottom",
+		"  q, Ctrl+C    Quit",
+		"",
+		"Contact Actions:",
+		"  +, N         Create new contact",
+		"  c            Mark as contacted",
+		"  b            Bump (reset date without contact)",
+		"  e            Edit contact details",
+		"  n            Add note/interaction",
+		"  i            View/edit interaction history",
+		"  a            Archive/unarchive contact",
+		"  m            Change contact style (periodic/ambient/triggered)",
+		"  D            Delete contact (with confirmation)",
+		"",
+		"State Management:",
+		"  s            Change contact state (ping, write, ok, etc.)",
+		"  S            Toggle filter: show only non-ok states",
+		"",
+		"Filtering:",
+		"  /            Search/filter contacts",
+		"  r            Filter by relationship type",
+		"  o            Toggle filter: show only overdue",
+		"  A            Toggle: show/hide archived contacts",
+		"  C            Clear all active filters",
+		"  Esc          Clear search filter / Close help",
+		"",
+		"Help:",
+		"  ?            Toggle this help screen",
+		"",
+		"In Help Mode:",
+		"  j/k          Scroll down/up",
+		"  g/G          Go to top/bottom",
+		"  Esc, ?, q    Close help",
+	}
+	
+	// Calculate visible area (accounting for borders and padding)
+	visibleHeight := height - 4
+	totalLines := len(helpLines)
+	
+	// Adjust scroll offset bounds
+	maxOffset := totalLines - visibleHeight
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	
+	// Handle "G" - go to bottom (use local variable for calculations)
+	scrollOffset := m.helpScrollOffset
+	if scrollOffset > maxOffset {
+		scrollOffset = maxOffset
+	}
+	
+	// Ensure scroll offset is within bounds
+	if scrollOffset < 0 {
+		scrollOffset = 0
+	}
+	if scrollOffset > maxOffset {
+		scrollOffset = maxOffset
+	}
+	
+	// Get visible lines
+	startLine := scrollOffset
+	endLine := startLine + visibleHeight
+	if endLine > totalLines {
+		endLine = totalLines
+	}
+	
+	visibleLines := helpLines[startLine:endLine]
+	
+	// Build content with scroll indicators
+	content := ""
+	
+	// Add scroll up indicator if needed
+	if scrollOffset > 0 {
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render("▲ (more above)") + "\n"
+		visibleLines = visibleLines[1:] // Remove one line to make room
+	}
+	
+	// Add the visible help content
+	for _, line := range visibleLines {
+		content += line + "\n"
+	}
+	
+	// Add scroll down indicator if needed
+	if scrollOffset < maxOffset {
+		// Remove last line to make room for indicator
+		lines := strings.Split(strings.TrimRight(content, "\n"), "\n")
+		if len(lines) > 1 {
+			content = strings.Join(lines[:len(lines)-1], "\n") + "\n"
+		}
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render("▼ (more below)")
+	}
 	
 	// Style the help content
-	content := lipgloss.NewStyle().
+	styledContent := lipgloss.NewStyle().
 		Width(width-4).
 		Height(height-4).
 		Padding(1).
-		Render(help)
+		Render(content)
 	
 	// Create the box
 	box := lipgloss.NewStyle().
@@ -2104,7 +2202,7 @@ Press any key to close this help...`
 		BorderForeground(lipgloss.Color("63")).
 		Width(width).
 		Height(height).
-		Render(content)
+		Render(styledContent)
 	
 	// Center on screen
 	return lipgloss.NewStyle().
