@@ -1591,49 +1591,97 @@ func (m Model) renderList(width, height int) string {
 	for i := startIdx; i < len(contacts) && i < startIdx+visibleHeight; i++ {
 		c := contacts[i]
 		
-		// Build the display line
-		var line string
+		// Build the display line without any styling first
+		var prefix string
+		var stateIndicator string
+		var styleIndicator string
 		
-		// Add overdue indicator or state indicator or spacing
+		// Determine overdue/state indicator
 		if c.IsOverdue() {
-			line = "* "
+			stateIndicator = "*"
 		} else if c.State.Valid && c.State.String != "ok" {
-			line = stateStyle.Render("•") + " "
+			stateIndicator = "•"
 		} else {
-			line = "  "
+			stateIndicator = " "
 		}
+		prefix = stateIndicator + " "
 		
-		// Add style indicator
+		// Determine style indicator
 		switch c.ContactStyle {
 		case "ambient":
-			line += greenStyle.Render("∞ ")
+			styleIndicator = "∞ "
 		case "triggered":
-			line += yellowStyle.Render("⚡ ")
+			styleIndicator = "⚡ "
 		default:
-			line += "  "
+			styleIndicator = "  "
 		}
+		prefix += styleIndicator
 		
 		// Add archived indicator
 		if c.Archived {
-			line += dimmedStyle.Render("[ARCH] ")
+			prefix += "[ARCH] "
 		}
 		
-		// Add name
-		line += c.Name
+		// Build the line content
+		content := prefix + c.Name
 		
 		// Add label if present
 		if c.Label.Valid {
 			// Clean up label too - remove newlines
 			label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
-			line += " " + labelStyle.Render("["+label+"]")
+			content += " [" + label + "]"
 		}
 		
-		// Apply selection styling to entire line if selected
+		// Now apply styling
+		var line string
 		if i == m.selected {
-			line = selectedStyle.Render(line)
-		} else if c.IsOverdue() {
-			// For non-selected overdue contacts, just color the asterisk
-			line = overdueStyle.Render("*") + line[1:]
+			// For selected lines, pad to full width and apply selection style
+			paddedContent := content
+			contentWidth := len(prefix) + lipgloss.Width(c.Name)
+			if c.Label.Valid {
+				label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
+				contentWidth += len(" [") + lipgloss.Width(label) + len("]")
+			}
+			if contentWidth < width-2 {
+				paddedContent = content + strings.Repeat(" ", width-2-contentWidth)
+			}
+			line = selectedStyle.Render(paddedContent)
+		} else {
+			// For non-selected lines, apply individual styles
+			line = ""
+			
+			// Apply overdue or state styling
+			if c.IsOverdue() {
+				line = overdueStyle.Render("*") + " "
+			} else if c.State.Valid && c.State.String != "ok" {
+				line = stateStyle.Render("•") + " "
+			} else {
+				line = "  "
+			}
+			
+			// Apply style indicator styling
+			switch c.ContactStyle {
+			case "ambient":
+				line += greenStyle.Render("∞ ")
+			case "triggered":
+				line += yellowStyle.Render("⚡ ")
+			default:
+				line += "  "
+			}
+			
+			// Add archived indicator
+			if c.Archived {
+				line += dimmedStyle.Render("[ARCH] ")
+			}
+			
+			// Add name
+			line += c.Name
+			
+			// Add label if present
+			if c.Label.Valid {
+				label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
+				line += " " + labelStyle.Render("["+label+"]")
+			}
 		}
 		
 		lines = append(lines, line)
