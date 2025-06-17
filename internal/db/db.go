@@ -41,6 +41,7 @@ func (db *DB) ListContacts() ([]Contact, error) {
 			basic_memory_url, contacted_at, last_bump_date, bump_count,
 			follow_up_date, deadline_date,
 			archived, archived_at,
+			contact_style, custom_frequency_days,
 			created_at, updated_at
 		FROM contacts
 		ORDER BY name
@@ -61,6 +62,7 @@ func (db *DB) ListContacts() ([]Contact, error) {
 			&c.BasicMemoryURL, &c.ContactedAt, &c.LastBumpDate, &c.BumpCount,
 			&c.FollowUpDate, &c.DeadlineDate,
 			&c.Archived, &c.ArchivedAt,
+			&c.ContactStyle, &c.CustomFrequencyDays,
 			&c.CreatedAt, &c.UpdatedAt,
 		)
 		if err != nil {
@@ -110,6 +112,7 @@ func (db *DB) GetContact(id int) (*Contact, error) {
 			basic_memory_url, contacted_at, last_bump_date, bump_count,
 			follow_up_date, deadline_date,
 			archived, archived_at,
+			contact_style, custom_frequency_days,
 			created_at, updated_at
 		FROM contacts
 		WHERE id = ?
@@ -122,6 +125,7 @@ func (db *DB) GetContact(id int) (*Contact, error) {
 		&c.BasicMemoryURL, &c.ContactedAt, &c.LastBumpDate, &c.BumpCount,
 		&c.FollowUpDate, &c.DeadlineDate,
 		&c.Archived, &c.ArchivedAt,
+		&c.ContactStyle, &c.CustomFrequencyDays,
 		&c.CreatedAt, &c.UpdatedAt,
 	)
 	if err != nil {
@@ -364,6 +368,26 @@ func (db *DB) DeleteInteraction(interactionID int) error {
 	_, err := db.conn.Exec(query, interactionID)
 	if err != nil {
 		return fmt.Errorf("deleting interaction: %w", err)
+	}
+	return nil
+}
+
+// UpdateContactStyle updates the contact style and custom frequency
+func (db *DB) UpdateContactStyle(contactID int, style string, customFrequencyDays *int) error {
+	var query string
+	var args []interface{}
+	
+	if customFrequencyDays != nil {
+		query = `UPDATE contacts SET contact_style = ?, custom_frequency_days = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+		args = []interface{}{style, *customFrequencyDays, contactID}
+	} else {
+		query = `UPDATE contacts SET contact_style = ?, custom_frequency_days = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+		args = []interface{}{style, contactID}
+	}
+	
+	_, err := db.conn.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("updating contact style: %w", err)
 	}
 	return nil
 }

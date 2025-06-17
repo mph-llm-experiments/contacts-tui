@@ -70,6 +70,13 @@ type Model struct {
 	interactionEditType  int // Selected interaction type
 	interactionDeleteConfirm bool
 	interactionToDelete int // ID of interaction to delete
+	
+	// Contact style mode
+	styleMode bool
+	styleSelected int
+	styleContactID int
+	customFreqInput textinput.Model
+	customFreqMode bool
 }
 
 // Available contact states
@@ -108,6 +115,13 @@ var InteractionTypes = []string{
 	"text",
 }
 
+// Available contact styles
+var ContactStyles = []string{
+	"periodic",
+	"ambient",
+	"triggered",
+}
+
 // Edit field indices
 const (
 	EditFieldName = iota
@@ -141,6 +155,12 @@ var (
 	
 	dimmedStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("238")) // Dim gray for archived
+	
+	greenStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("34")) // Green for ambient
+	
+	yellowStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("226")) // Yellow for triggered
 )
 // New creates a new application model
 func New(database *db.DB) (*Model, error) {
@@ -222,6 +242,12 @@ func New(database *db.DB) (*Model, error) {
 	interactionTA.CharLimit = 500
 	interactionTA.ShowLineNumbers = false
 	
+	// Setup custom frequency input
+	customFreqInput := textinput.New()
+	customFreqInput.Placeholder = "Days (e.g. 30)"
+	customFreqInput.Width = 20
+	customFreqInput.CharLimit = 4
+	
 	return &Model{
 		db:         database,
 		contacts:   contacts,
@@ -230,6 +256,7 @@ func New(database *db.DB) (*Model, error) {
 		editInputs: editInputs,
 		newContactInputs: newContactInputs,
 		interactionEditInput: interactionTA,
+		customFreqInput: customFreqInput,
 	}, nil
 }
 
@@ -669,6 +696,100 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		
+		// Contact style mode handling
+		if m.styleMode {
+			if m.customFreqMode {
+				// Custom frequency input mode
+				switch msg.String() {
+				case "enter":
+					// Parse and save custom frequency
+					var customDays *int
+					if freq := m.customFreqInput.Value(); freq != "" {
+						if days, err := fmt.Sscanf(freq, "%d", &customDays); err == nil && days == 1 {
+							// Valid number entered
+						} else {
+							customDays = nil
+						}
+					}
+					
+					// Update the contact style
+					err := m.db.UpdateContactStyle(m.styleContactID, "periodic", customDays)
+					if err != nil {
+						m.err = err
+					} else {
+						// Reload contacts
+						if newContacts, err := m.db.ListContacts(); err == nil {
+							m.contacts = newContacts
+						}
+					}
+					
+					m.customFreqMode = false
+					m.styleMode = false
+					m.customFreqInput.Reset()
+					return m, nil
+					
+				case "esc":
+					// Cancel custom frequency input
+					m.customFreqMode = false
+					m.customFreqInput.Reset()
+					return m, nil
+					
+				default:
+					// Update input field
+					var cmd tea.Cmd
+					m.customFreqInput, cmd = m.customFreqInput.Update(msg)
+					return m, cmd
+				}
+			}
+			
+			// Style selection mode
+			switch msg.String() {
+			case "esc":
+				m.styleMode = false
+				m.styleSelected = 0
+				return m, nil
+				
+			case "enter":
+				// Apply selected style
+				style := ContactStyles[m.styleSelected]
+				
+				if style == "periodic" {
+					// Switch to custom frequency input mode
+					m.customFreqMode = true
+					m.customFreqInput.Focus()
+					return m, nil
+				} else {
+					// Apply ambient or triggered style
+					err := m.db.UpdateContactStyle(m.styleContactID, style, nil)
+					if err != nil {
+						m.err = err
+					} else {
+						// Reload contacts
+						if newContacts, err := m.db.ListContacts(); err == nil {
+							m.contacts = newContacts
+						}
+					}
+					m.styleMode = false
+					m.styleSelected = 0
+				}
+				return m, nil
+				
+			case "j", "down":
+				if m.styleSelected < len(ContactStyles)-1 {
+					m.styleSelected++
+				}
+				return m, nil
+				
+			case "k", "up":
+				if m.styleSelected > 0 {
+					m.styleSelected--
+				}
+				return m, nil
+			}
+			
+			return m, nil
+		}
+		
 		// Interaction edit mode handling
 		if m.interactionEditMode {
 			if m.interactionDeleteConfirm {
@@ -1077,6 +1198,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+			
+		case "m":
+			// Change contact style
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				contact := contacts[m.selected]
+				m.styleMode = true
+				m.styleSelected = 0
+				m.styleContactID = contact.ID
+				// Set initial selection based on current style
+				for i, style := range ContactStyles {
+					if style == contact.ContactStyle {
+						m.styleSelected = i
+						break
+					}
+				}
+			}
+			return m, nil
 		}
 	}
 	
@@ -1233,6 +1372,11 @@ func (m Model) View() string {
 		return m.renderDeleteConfirmation()
 	}
 	
+	// Overlay style mode if active
+	if m.styleMode {
+		return m.renderStyleMode()
+	}
+	
 	// Overlay help if active
 	if m.showHelp {
 		return m.renderHelpOverlay()
@@ -1309,6 +1453,16 @@ func (m Model) renderList(width, height int) string {
 			line = stateStyle.Render("•") + " "
 		} else {
 			line = "  "
+		}
+		
+		// Add style indicator
+		switch c.ContactStyle {
+		case "ambient":
+			line += greenStyle.Render("∞ ")
+		case "triggered":
+			line += yellowStyle.Render("⚡ ")
+		default:
+			line += "  "
 		}
 		
 		// Add archived indicator
@@ -1397,6 +1551,13 @@ func (m Model) renderDetail(width, height int) string {
 		}
 		lines = append(lines, bumpInfo)
 	}
+	
+	// Contact style
+	styleInfo := fmt.Sprintf("Style: %s", c.ContactStyle)
+	if c.ContactStyle == "periodic" && c.CustomFrequencyDays.Valid {
+		styleInfo += fmt.Sprintf(" (%d days)", c.CustomFrequencyDays.Int64)
+	}
+	lines = append(lines, styleInfo)
 	
 	lines = append(lines, "")
 	
@@ -1823,6 +1984,72 @@ func (m *Model) enterEditMode(contact db.Contact) {
 	m.editInputs[0].Focus()
 }
 
+// renderStyleMode renders the contact style selection overlay
+func (m Model) renderStyleMode() string {
+	width := 60
+	height := 20
+	
+	content := "Select Contact Style:\n\n"
+	
+	// Show current contact info
+	contacts := m.filteredContacts()
+	if len(contacts) > m.selected {
+		contact := contacts[m.selected]
+		content += fmt.Sprintf("Contact: %s\n", contact.Name)
+		content += fmt.Sprintf("Current style: %s", contact.ContactStyle)
+		if contact.ContactStyle == "periodic" && contact.CustomFrequencyDays.Valid {
+			content += fmt.Sprintf(" (%d days)", contact.CustomFrequencyDays.Int64)
+		}
+		content += "\n\n"
+	}
+	
+	if m.customFreqMode {
+		// Custom frequency input mode
+		content += "Enter custom frequency in days:\n\n"
+		content += m.customFreqInput.View() + "\n\n"
+		content += "(Press Enter to save, Esc to cancel)"
+	} else {
+		// Style selection mode
+		for i, style := range ContactStyles {
+			if i == m.styleSelected {
+				content += fmt.Sprintf("→ %s", style)
+			} else {
+				content += fmt.Sprintf("  %s", style)
+			}
+			
+			// Add description
+			switch style {
+			case "periodic":
+				content += " - Regular cadence checking"
+			case "ambient":
+				content += " - Regular/automatic contact (∞)"
+			case "triggered":
+				content += " - Event-based outreach (⚡)"
+			}
+			content += "\n"
+		}
+		
+		content += "\n(Press Enter to select, Esc to cancel)"
+	}
+	
+	// Create bordered box
+	boxStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(1, 2)
+	
+	// Center the box
+	centeredStyle := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		AlignHorizontal(lipgloss.Center).
+		AlignVertical(lipgloss.Center)
+	
+	return centeredStyle.Render(boxStyle.Render(content))
+}
+
 // renderHelpOverlay renders the full help screen
 func (m Model) renderHelpOverlay() string {
 	width := 80
@@ -1844,6 +2071,7 @@ Contact Actions:
   n            Add note/interaction
   i            View/edit interaction history
   a            Archive/unarchive contact
+  m            Change contact style (periodic/ambient/triggered)
   D            Delete contact (with confirmation)
 
 State Management:

@@ -7,25 +7,27 @@ import (
 
 // Contact represents a person in the database
 type Contact struct {
-	ID                int
-	Name              string
-	Email             sql.NullString
-	Phone             sql.NullString
-	Company           sql.NullString
-	RelationshipType  string
-	State             sql.NullString
-	Notes             sql.NullString
-	Label             sql.NullString
-	BasicMemoryURL    sql.NullString
-	ContactedAt       sql.NullTime
-	LastBumpDate      sql.NullTime
-	BumpCount         int
-	FollowUpDate      sql.NullTime
-	DeadlineDate      sql.NullTime
-	Archived          bool
-	ArchivedAt        sql.NullTime
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                   int
+	Name                 string
+	Email                sql.NullString
+	Phone                sql.NullString
+	Company              sql.NullString
+	RelationshipType     string
+	State                sql.NullString
+	Notes                sql.NullString
+	Label                sql.NullString
+	BasicMemoryURL       sql.NullString
+	ContactedAt          sql.NullTime
+	LastBumpDate         sql.NullTime
+	BumpCount            int
+	FollowUpDate         sql.NullTime
+	DeadlineDate         sql.NullTime
+	Archived             bool
+	ArchivedAt           sql.NullTime
+	ContactStyle         string
+	CustomFrequencyDays  sql.NullInt64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 // Log represents an interaction log entry
@@ -38,10 +40,15 @@ type Log struct {
 	CreatedAt       time.Time
 }
 
-// IsOverdue checks if a contact is overdue based on relationship type
+// IsOverdue checks if a contact is overdue based on relationship type and contact style
 func (c Contact) IsOverdue() bool {
 	// Archived contacts are never overdue
 	if c.Archived {
+		return false
+	}
+	
+	// Ambient and triggered contacts are never overdue
+	if c.ContactStyle == "ambient" || c.ContactStyle == "triggered" {
 		return false
 	}
 	
@@ -67,6 +74,12 @@ func (c Contact) IsOverdue() bool {
 	
 	daysSince := time.Since(lastInteraction.Time).Hours() / 24
 	
+	// Use custom frequency if set
+	if c.CustomFrequencyDays.Valid && c.CustomFrequencyDays.Int64 > 0 {
+		return daysSince > float64(c.CustomFrequencyDays.Int64)
+	}
+	
+	// Otherwise use relationship type defaults
 	switch c.RelationshipType {
 	case "close", "family":
 		return daysSince > 30
