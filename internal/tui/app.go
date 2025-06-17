@@ -78,6 +78,71 @@ type Model struct {
 	styleContactID int
 	customFreqInput textinput.Model
 	customFreqMode bool
+	
+	// Menu hotkeys
+	stateHotkeys []MenuHotkey
+	interactionHotkeys []MenuHotkey
+	relationshipHotkeys []MenuHotkey
+}
+
+// MenuHotkey represents a menu item with its assigned hotkey
+type MenuHotkey struct {
+	Key   rune
+	Label string
+	Value string
+}
+
+// assignHotkeys assigns unique hotkeys to menu items
+func assignHotkeys(items []string) []MenuHotkey {
+	hotkeys := make([]MenuHotkey, len(items))
+	usedKeys := make(map[rune]bool)
+	
+	// First pass: try first character
+	for i, item := range items {
+		if len(item) > 0 {
+			firstChar := rune(item[0])
+			if firstChar >= 'a' && firstChar <= 'z' && !usedKeys[firstChar] {
+				hotkeys[i] = MenuHotkey{Key: firstChar, Label: item, Value: item}
+				usedKeys[firstChar] = true
+			}
+		}
+	}
+	
+	// Second pass: find unique characters for conflicts
+	for i, item := range items {
+		if hotkeys[i].Key == 0 && len(item) > 0 {
+			// Try each character in the word
+			for _, char := range item {
+				if char >= 'a' && char <= 'z' && !usedKeys[char] {
+					hotkeys[i] = MenuHotkey{Key: char, Label: item, Value: item}
+					usedKeys[char] = true
+					break
+				}
+			}
+		}
+	}
+	
+	// Third pass: if still no key, use numbers
+	nextNum := '1'
+	for i := range items {
+		if hotkeys[i].Key == 0 {
+			if nextNum <= '9' {
+				hotkeys[i] = MenuHotkey{Key: nextNum, Label: items[i], Value: items[i]}
+				nextNum++
+			} else {
+				// Fallback to first available letter
+				for c := 'a'; c <= 'z'; c++ {
+					if !usedKeys[c] {
+						hotkeys[i] = MenuHotkey{Key: c, Label: items[i], Value: items[i]}
+						usedKeys[c] = true
+						break
+					}
+				}
+			}
+		}
+	}
+	
+	return hotkeys
 }
 
 // Available contact states
@@ -258,6 +323,9 @@ func New(database *db.DB) (*Model, error) {
 		newContactInputs: newContactInputs,
 		interactionEditInput: interactionTA,
 		customFreqInput: customFreqInput,
+		stateHotkeys: assignHotkeys(ContactStates),
+		interactionHotkeys: assignHotkeys(InteractionTypes),
+		relationshipHotkeys: assignHotkeys(RelationshipTypes),
 	}, nil
 }
 
@@ -306,6 +374,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "k", "up":
 				if m.typeSelected > 0 {
 					m.typeSelected--
+				}
+			default:
+				// Check if it's a hotkey
+				if len(msg.String()) == 1 {
+					char := rune(msg.String()[0])
+					for i, hotkey := range m.relationshipHotkeys {
+						if hotkey.Key == char {
+							// Apply the filter immediately
+							selected := RelationshipTypes[i]
+							if selected == "all" {
+								m.typeFilter = ""
+							} else {
+								m.typeFilter = selected
+							}
+							m.typeFilterMode = false
+							m.typeSelected = 0
+							m.selected = m.ensureValidSelection()
+							return m, nil
+						}
+					}
 				}
 			}
 			return m, nil
@@ -651,6 +739,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "k", "up":
 				if m.stateSelected > 0 {
 					m.stateSelected--
+				}
+			default:
+				// Check if it's a hotkey
+				if len(msg.String()) == 1 {
+					char := rune(msg.String()[0])
+					for i, hotkey := range m.stateHotkeys {
+						if hotkey.Key == char {
+							// Apply the state immediately
+							contacts := m.filteredContacts()
+							if len(contacts) > 0 && m.selected < len(contacts) {
+								contact := contacts[m.selected]
+								newState := ContactStates[i]
+								err := m.db.UpdateContactState(contact.ID, newState)
+								if err != nil {
+									m.err = err
+								} else {
+									// Reload contacts to show updated state
+									if newContacts, err := m.db.ListContacts(); err == nil {
+										m.contacts = newContacts
+										m.selected = m.ensureValidSelection()
+									}
+								}
+							}
+							m.stateMode = false
+							m.stateSelected = 0
+							return m, nil
+						}
+					}
 				}
 			}
 			return m, nil
@@ -1634,7 +1750,7 @@ func (m Model) renderHelp() string {
 	}
 	
 	if m.typeFilterMode {
-		return " j/k: navigate • Enter: select • Esc: cancel"
+		return " Press hotkey to select • Esc: cancel"
 	}
 	
 	if m.stateMode {
@@ -1680,8 +1796,25 @@ func (m Model) renderStateSelection() string {
 	lines = append(lines, fmt.Sprintf("Set state for %s:", contact.Name))
 	lines = append(lines, "")
 	
-	for i, state := range ContactStates {
-		line := fmt.Sprintf("  %s", state)
+	for i, hotkey := range m.stateHotkeys {
+		// Format the hotkey display
+		stateDisplay := ""
+		foundKey := false
+		for _, char := range hotkey.Label {
+			if !foundKey && char == hotkey.Key {
+				stateDisplay += fmt.Sprintf("[%c]", char)
+				foundKey = true
+			} else {
+				stateDisplay += string(char)
+			}
+		}
+		
+		// If hotkey wasn't in the word, prepend it
+		if !foundKey {
+			stateDisplay = fmt.Sprintf("[%c] %s", hotkey.Key, hotkey.Label)
+		}
+		
+		line := fmt.Sprintf("  %s", stateDisplay)
 		if i == m.stateSelected {
 			line = selectedStyle.Render(line)
 		}
@@ -1689,7 +1822,7 @@ func (m Model) renderStateSelection() string {
 	}
 	
 	lines = append(lines, "")
-	lines = append(lines, "Press Enter to confirm, Esc to cancel")
+	lines = append(lines, "Press hotkey to select, Esc to cancel")
 	
 	// Create a bordered box and center it
 	content := strings.Join(lines, "\n")
@@ -1762,11 +1895,30 @@ func (m Model) renderTypeSelection() string {
 	lines = append(lines, "Filter by relationship type:")
 	lines = append(lines, "")
 	
-	for i, rType := range RelationshipTypes {
-		line := fmt.Sprintf("  %s", rType)
-		if rType == "all" {
-			line = "  all (clear filter)"
+	for i, hotkey := range m.relationshipHotkeys {
+		// Format the hotkey display
+		display := ""
+		foundKey := false
+		for _, char := range hotkey.Label {
+			if !foundKey && char == hotkey.Key {
+				display += fmt.Sprintf("[%c]", char)
+				foundKey = true
+			} else {
+				display += string(char)
+			}
 		}
+		
+		// If hotkey wasn't in the word, prepend it
+		if !foundKey {
+			display = fmt.Sprintf("[%c] %s", hotkey.Key, hotkey.Label)
+		}
+		
+		// Special case for "all"
+		if hotkey.Label == "all" {
+			display += " (clear filter)"
+		}
+		
+		line := fmt.Sprintf("  %s", display)
 		if i == m.typeSelected {
 			line = selectedStyle.Render(line)
 		}
@@ -1774,7 +1926,7 @@ func (m Model) renderTypeSelection() string {
 	}
 	
 	lines = append(lines, "")
-	lines = append(lines, "Press Enter to confirm, Esc to cancel")
+	lines = append(lines, "Press hotkey to select, Esc to cancel")
 	
 	// Create a bordered box and center it
 	content := strings.Join(lines, "\n")
