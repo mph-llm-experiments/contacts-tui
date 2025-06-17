@@ -205,7 +205,7 @@ var (
 	// Contact list selection - no background, just bold and bright
 	selectedStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("15")) // Bright white
+			Foreground(lipgloss.Color("214")) // Orange
 	
 	// Note type selector style - no background, just bold brackets
 	noteTypeSelectorStyle = lipgloss.NewStyle().
@@ -1597,87 +1597,66 @@ func (m Model) renderList(width, height int) string {
 	for i := startIdx; i < len(contacts) && i < startIdx+visibleHeight; i++ {
 		c := contacts[i]
 		
-		// Build the display line without any styling first
-		var prefix string
-		var stateIndicator string
-		var styleIndicator string
+		// Determine the single most important indicator to show
+		// Priority: overdue > non-ok state > contact style > none
+		var indicator string
+		var indicatorStyle func(...string) string
 		
-		// Determine overdue/state indicator
 		if c.IsOverdue() {
-			stateIndicator = "*"
+			indicator = "*"
+			indicatorStyle = overdueStyle.Render
 		} else if c.State.Valid && c.State.String != "ok" {
-			stateIndicator = "•"
+			indicator = "●"
+			indicatorStyle = stateStyle.Render
 		} else {
-			stateIndicator = " "
-		}
-		prefix = stateIndicator + " "
-		
-		// Determine style indicator
-		switch c.ContactStyle {
-		case "ambient":
-			styleIndicator = "∞ "
-		case "triggered":
-			styleIndicator = "⚡ "
-		default:
-			styleIndicator = "  "
-		}
-		prefix += styleIndicator
-		
-		// Add archived indicator
-		if c.Archived {
-			prefix += "[ARCH] "
-		}
-		
-		// Build the line content
-		content := prefix + c.Name
-		
-		// Add label if present
-		if c.Label.Valid {
-			// Clean up label too - remove newlines
-			label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
-			content += " [" + label + "]"
-		}
-		
-		// Now apply styling
-		var line string
-		if i == m.selected {
-			// For selected lines, just make them bold and bright - no background
-			line = selectedStyle.Render("> " + content)
-		} else {
-			// For non-selected lines, apply individual styles with space prefix
-			line = "  " // Space for the selection indicator
-			
-			// Apply overdue or state styling
-			if c.IsOverdue() {
-				line += overdueStyle.Render("*") + " "
-			} else if c.State.Valid && c.State.String != "ok" {
-				line += stateStyle.Render("•") + " "
-			} else {
-				line += "  "
-			}
-			
-			// Apply style indicator styling
 			switch c.ContactStyle {
 			case "ambient":
-				line += greenStyle.Render("∞ ")
+				indicator = "∞"
+				indicatorStyle = greenStyle.Render
 			case "triggered":
-				line += yellowStyle.Render("⚡ ")
+				indicator = "⚡"
+				indicatorStyle = yellowStyle.Render
 			default:
-				line += "  "
+				indicator = " "
+				indicatorStyle = func(s ...string) string { return strings.Join(s, "") }
 			}
+		}
+		
+		// Build name content
+		nameContent := c.Name
+		if c.Label.Valid {
+			label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
+			nameContent += " [" + label + "]"
+		}
+		if c.Archived {
+			nameContent = "[ARCH] " + nameContent
+		}
+		
+		// Build the line with consistent spacing and leading space
+		var line string
+		if i == m.selected {
+			// Selected: style the entire line uniformly with leading space
+			rawLine := fmt.Sprintf("▶ %s %s", indicator, nameContent)
+			line = selectedStyle.Render(rawLine)
+		} else {
+			// Non-selected: leading space + styled indicator + space + name
+			line = "  " + indicatorStyle(indicator) + " "
 			
-			// Add archived indicator
+			// Add name content with appropriate styling
 			if c.Archived {
-				line += dimmedStyle.Render("[ARCH] ")
-			}
-			
-			// Add name
-			line += c.Name
-			
-			// Add label if present
-			if c.Label.Valid {
-				label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
-				line += " " + labelStyle.Render("["+label+"]")
+				if c.Label.Valid {
+					label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
+					line += dimmedStyle.Render("[ARCH] ") + c.Name + " " + labelStyle.Render("["+label+"]")
+				} else {
+					line += dimmedStyle.Render("[ARCH] ") + c.Name
+				}
+			} else {
+				if c.Label.Valid {
+					label := strings.TrimSpace(strings.ReplaceAll(c.Label.String, "\n", " "))
+					line += c.Name + " " + labelStyle.Render("["+label+"]")
+				} else {
+					line += c.Name
+				}
 			}
 		}
 		
