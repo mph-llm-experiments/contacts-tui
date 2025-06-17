@@ -18,7 +18,7 @@ type DB struct {
 func Open(dbPath string) (*DB, error) {
 	// Check if DB exists
 	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("database not found at %s", dbPath)
+		return nil, fmt.Errorf("database not found at %s\nRun 'contacts-tui -init' to create it", dbPath)
 	}
 	
 	conn, err := sql.Open("sqlite3", dbPath)
