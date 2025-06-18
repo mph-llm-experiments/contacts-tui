@@ -152,6 +152,16 @@ func (db *DB) UpdateContactState(contactID int, state string) error {
 	return nil
 }
 
+// UpdateContactLabel updates the label of a contact
+func (db *DB) UpdateContactLabel(contactID int, label string) error {
+	query := `UPDATE contacts SET label = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+	_, err := db.conn.Exec(query, label, contactID)
+	if err != nil {
+		return fmt.Errorf("updating contact label: %w", err)
+	}
+	return nil
+}
+
 // AddInteractionNote adds a note without updating contacted_at
 func (db *DB) AddInteractionNote(contactID int, interactionType string, notes string) error {
 	if notes == "" {

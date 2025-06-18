@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/pdxmph/contacts-tui/internal/db"
+	"github.com/pdxmph/contacts-tui/internal/taskwarrior"
 )
 
 // Model represents the main application state
@@ -27,6 +28,7 @@ type Model struct {
 	noteType   int
 	filter     textinput.Model
 	err        error
+	successMsg string
 	
 	// Smart filters
 	stateFilter   bool // Show only non-ok states
@@ -78,6 +80,18 @@ type Model struct {
 	styleContactID int
 	customFreqInput textinput.Model
 	customFreqMode bool
+	
+	// TaskWarrior integration
+	taskwarriorClient *taskwarrior.Client
+	taskMode          bool // Task view mode
+	tasks             []taskwarrior.Task
+	selectedTask      int
+	
+	// Label prompt mode (when creating tasks for contacts without labels)
+	labelPromptMode bool
+	labelPromptInput textinput.Model
+	labelPromptContactID int
+	labelPromptNewState string
 	
 	// Menu hotkeys
 	stateHotkeys []MenuHotkey
@@ -320,6 +334,12 @@ func New(database *db.DB) (*Model, error) {
 	customFreqInput.Width = 20
 	customFreqInput.CharLimit = 4
 	
+	// Setup label prompt input
+	labelPromptInput := textinput.New()
+	labelPromptInput.Placeholder = "e.g. @johnd"
+	labelPromptInput.Width = 30
+	labelPromptInput.CharLimit = 50
+	
 	return &Model{
 		db:         database,
 		contacts:   contacts,
@@ -329,6 +349,8 @@ func New(database *db.DB) (*Model, error) {
 		newContactInputs: newContactInputs,
 		interactionEditInput: interactionTA,
 		customFreqInput: customFreqInput,
+		labelPromptInput: labelPromptInput,
+		taskwarriorClient: taskwarrior.NewClient(),
 		stateHotkeys: assignHotkeys(ContactStates),
 		interactionHotkeys: assignHotkeys(InteractionTypes),
 		relationshipHotkeys: assignHotkeys(RelationshipTypes),
@@ -456,6 +478,153 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.deleteContactID = 0
 				m.deleteContactName = ""
 				return m, nil
+			}
+		}
+		
+		// Task mode handling
+		if m.taskMode {
+			switch msg.String() {
+			case "esc":
+				// Exit task mode
+				m.taskMode = false
+				m.tasks = nil
+				m.selectedTask = 0
+				return m, nil
+				
+			case "j", "down":
+				// Navigate down in task list
+				if len(m.tasks) > 0 && m.selectedTask < len(m.tasks)-1 {
+					m.selectedTask++
+				}
+				return m, nil
+				
+			case "k", "up":
+				// Navigate up in task list
+				if m.selectedTask > 0 {
+					m.selectedTask--
+				}
+				return m, nil
+				
+			case "enter", " ":
+				// Complete selected task
+				if len(m.tasks) > 0 && m.selectedTask < len(m.tasks) {
+					task := m.tasks[m.selectedTask]
+					err := m.taskwarriorClient.CompleteTask(task.UUID)
+					if err != nil {
+						m.err = fmt.Errorf("completing task: %w", err)
+						return m, nil
+					}
+					
+					// Show confirmation message
+					m.successMsg = fmt.Sprintf("✓ Completed: %s", task.Description)
+					
+					// Refresh task list
+					contacts := m.filteredContacts()
+					if len(contacts) > 0 && m.selected < len(contacts) {
+						contact := contacts[m.selected]
+						if contact.Label.Valid && contact.Label.String != "" {
+							if tasks, err := m.taskwarriorClient.GetContactTasks(contact.Label.String); err == nil {
+								m.tasks = tasks
+								// Adjust selected task if we're at the end
+								if m.selectedTask >= len(m.tasks) && len(m.tasks) > 0 {
+									m.selectedTask = len(m.tasks) - 1
+								} else if len(m.tasks) == 0 {
+									m.selectedTask = 0
+								}
+							}
+						}
+					}
+				}
+				return m, nil
+				
+			case "r":
+				// Refresh task list
+				contacts := m.filteredContacts()
+				if len(contacts) > 0 && m.selected < len(contacts) {
+					contact := contacts[m.selected]
+					if contact.Label.Valid && contact.Label.String != "" {
+						if tasks, err := m.taskwarriorClient.GetContactTasks(contact.Label.String); err == nil {
+							m.tasks = tasks
+							m.selectedTask = 0
+						} else {
+							m.err = fmt.Errorf("refreshing tasks: %w", err)
+						}
+					}
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+		
+		// Label prompt mode handling
+		if m.labelPromptMode {
+			switch msg.String() {
+			case "esc":
+				// Cancel label prompt
+				m.labelPromptMode = false
+				m.labelPromptInput.Blur()
+				m.labelPromptContactID = 0
+				m.labelPromptNewState = ""
+				return m, nil
+				
+			case "enter":
+				// Save label and create task
+				newLabel := strings.TrimSpace(m.labelPromptInput.Value())
+				if newLabel == "" {
+					m.err = fmt.Errorf("label cannot be empty")
+					return m, nil
+				}
+				
+				// Ensure label starts with @
+				if !strings.HasPrefix(newLabel, "@") {
+					newLabel = "@" + newLabel
+				}
+				
+				// Check for uniqueness
+				for _, contact := range m.contacts {
+					if contact.Label.Valid && contact.Label.String == newLabel {
+						m.err = fmt.Errorf("label %s already exists", newLabel)
+						return m, nil
+					}
+				}
+				
+				// Update contact with new label
+				err := m.db.UpdateContactLabel(m.labelPromptContactID, newLabel)
+				if err != nil {
+					m.err = fmt.Errorf("failed to update label: %w", err)
+					return m, nil
+				}
+				
+				// Create TaskWarrior task with new label
+				if contact, err := m.db.GetContact(m.labelPromptContactID); err == nil {
+					taskErr := m.taskwarriorClient.CreateContactTask(
+						contact.Name,
+						m.labelPromptNewState,
+						newLabel,
+					)
+					if taskErr != nil {
+						m.err = fmt.Errorf("label added but task creation failed: %w", taskErr)
+					} else {
+						m.successMsg = fmt.Sprintf("✓ Added label %s and created task", newLabel)
+					}
+				}
+				
+				// Reload contacts and exit label prompt mode
+				if newContacts, err := m.db.ListContacts(); err == nil {
+					m.contacts = newContacts
+					m.selected = m.ensureValidSelection()
+				}
+				
+				m.labelPromptMode = false
+				m.labelPromptInput.Blur()
+				m.labelPromptContactID = 0
+				m.labelPromptNewState = ""
+				return m, nil
+			default:
+				// Handle input
+				var cmd tea.Cmd
+				m.labelPromptInput, cmd = m.labelPromptInput.Update(msg)
+				return m, cmd
 			}
 		}
 		
@@ -727,6 +896,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						m.err = err
 					} else {
+						// Create TaskWarrior task if state changed from "ok" to something else
+						if newState != "ok" && m.taskwarriorClient.IsEnabled() {
+							if contact.Label.Valid && contact.Label.String != "" {
+								taskErr := m.taskwarriorClient.CreateContactTask(
+									contact.Name, 
+									newState, 
+									contact.Label.String,
+								)
+								if taskErr != nil {
+									// Don't fail the state change, just log the error
+									m.err = fmt.Errorf("state updated but task creation failed: %w", taskErr)
+								}
+							} else {
+								// Prompt for label instead of showing error
+								m.labelPromptMode = true
+								m.labelPromptContactID = contact.ID
+								m.labelPromptNewState = newState
+								m.labelPromptInput.SetValue("")
+								m.labelPromptInput.Focus()
+								m.stateMode = false // Exit state mode
+								return m, textinput.Blink
+							}
+						}
+						
 						// Reload contacts to show updated state
 						if newContacts, err := m.db.ListContacts(); err == nil {
 							m.contacts = newContacts
@@ -761,6 +954,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								if err != nil {
 									m.err = err
 								} else {
+									// Create TaskWarrior task if state changed from "ok" to something else
+									if newState != "ok" && m.taskwarriorClient.IsEnabled() {
+										if contact.Label.Valid && contact.Label.String != "" {
+											taskErr := m.taskwarriorClient.CreateContactTask(
+												contact.Name, 
+												newState, 
+												contact.Label.String,
+											)
+											if taskErr != nil {
+												// Don't fail the state change, just log the error
+												m.err = fmt.Errorf("state updated but task creation failed: %w", taskErr)
+											}
+										} else {
+											// Prompt for label instead of showing error
+											m.labelPromptMode = true
+											m.labelPromptContactID = contact.ID
+											m.labelPromptNewState = newState
+											m.labelPromptInput.SetValue("")
+											m.labelPromptInput.Focus()
+											m.stateMode = false // Exit state mode
+											return m, textinput.Blink
+										}
+									}
+									
 									// Reload contacts to show updated state
 									if newContacts, err := m.db.ListContacts(); err == nil {
 										m.contacts = newContacts
@@ -1183,6 +1400,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(textinput.Blink, tea.ClearScreen)
 			
 		case "esc":
+			// Clear any error messages and return to normal operation
+			if m.err != nil {
+				m.err = nil
+				return m, nil
+			}
+			// Clear any success messages
+			if m.successMsg != "" {
+				m.successMsg = ""
+				return m, nil
+			}
 			// Close help overlay if open
 			if m.showHelp {
 				m.showHelp = false
@@ -1353,6 +1580,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 			
+		case "t":
+			// Enter task view mode
+			contacts := m.filteredContacts()
+			if len(contacts) > 0 && m.selected < len(contacts) {
+				contact := contacts[m.selected]
+				if m.taskwarriorClient.IsEnabled() && contact.Label.Valid && contact.Label.String != "" {
+					tasks, err := m.taskwarriorClient.GetContactTasks(contact.Label.String)
+					if err == nil {
+						m.taskMode = true
+						m.tasks = tasks
+						m.selectedTask = 0
+					} else {
+						m.err = fmt.Errorf("loading tasks: %w", err)
+					}
+				} else if !m.taskwarriorClient.IsEnabled() {
+					m.err = fmt.Errorf("TaskWarrior not available")
+				} else {
+					m.err = fmt.Errorf("contact must have a label to view tasks")
+				}
+			}
+			return m, nil
+			
 		case "m":
 			// Change contact style
 			contacts := m.filteredContacts()
@@ -1462,7 +1711,11 @@ func (m Model) ensureValidSelection() int {
 // View renders the UI
 func (m Model) View() string {
 	if m.err != nil {
-		return fmt.Sprintf("Error: %v\n\nPress q to quit.", m.err)
+		return fmt.Sprintf("Error: %v\n\nPress Esc to continue or q to quit.", m.err)
+	}
+	
+	if m.successMsg != "" {
+		return fmt.Sprintf("Success: %v\n\nPress Esc to continue.", m.successMsg)
 	}
 	
 	if m.width == 0 || m.height == 0 {
@@ -1529,6 +1782,16 @@ func (m Model) View() string {
 	// Overlay style mode if active
 	if m.styleMode {
 		return m.renderStyleMode()
+	}
+	
+	// Overlay task mode if active
+	if m.taskMode {
+		return m.renderTaskMode()
+	}
+	
+	// Overlay label prompt mode if active
+	if m.labelPromptMode {
+		return m.renderLabelPrompt()
 	}
 	
 	// Overlay help if active
@@ -1598,16 +1861,16 @@ func (m Model) renderList(width, height int) string {
 		c := contacts[i]
 		
 		// Determine the single most important indicator to show
-		// Priority: overdue > non-ok state > contact style > none
+		// Priority: non-ok state > overdue > contact style > none
 		var indicator string
 		var indicatorStyle func(...string) string
 		
-		if c.IsOverdue() {
-			indicator = "*"
-			indicatorStyle = overdueStyle.Render
-		} else if c.State.Valid && c.State.String != "ok" {
+		if c.State.Valid && c.State.String != "ok" {
 			indicator = "●"
 			indicatorStyle = stateStyle.Render
+		} else if c.IsOverdue() {
+			indicator = "*"
+			indicatorStyle = overdueStyle.Render
 		} else {
 			switch c.ContactStyle {
 			case "ambient":
@@ -1779,6 +2042,14 @@ func (m Model) renderHelp() string {
 	
 	if m.stateMode {
 		return " j/k: navigate • Enter: confirm • Esc: cancel"
+	}
+	
+	if m.taskMode {
+		return " j/k: navigate tasks • Enter/Space: mark task complete • r: refresh • Esc: back to contacts"
+	}
+	
+	if m.labelPromptMode {
+		return " Enter: save label and create task • Esc: cancel"
 	}
 	
 	if m.noteMode {
@@ -2275,6 +2546,7 @@ func (m Model) renderHelpOverlay() string {
 		"  e            Edit contact details",
 		"  n            Add note/interaction",
 		"  i            View/edit interaction history",
+		"  t            View/manage TaskWarrior tasks",
 		"  a            Archive/unarchive contact",
 		"  m            Change contact style (periodic/ambient/triggered)",
 		"  D            Delete contact (with confirmation)",
@@ -2384,6 +2656,144 @@ func (m Model) renderHelpOverlay() string {
 		Render(box)
 }
 
+func (m Model) renderTaskMode() string {
+	width := 80
+	height := 20
+	
+	content := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("32")).
+		MarginBottom(1).
+		Render("TaskWarrior Tasks") + "\n\n"
+	
+	// Show current contact info
+	contacts := m.filteredContacts()
+	if len(contacts) > 0 && m.selected < len(contacts) {
+		contact := contacts[m.selected]
+		contactInfo := fmt.Sprintf("Contact: %s", contact.Name)
+		if contact.Label.Valid && contact.Label.String != "" {
+			contactInfo += fmt.Sprintf(" (%s)", contact.Label.String)
+		}
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			MarginBottom(1).
+			Render(contactInfo) + "\n\n"
+	}
+	
+	// Show error if any
+	if m.err != nil {
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			MarginBottom(1).
+			Render("Error: " + m.err.Error()) + "\n\n"
+	}
+	
+	// Show tasks
+	if len(m.tasks) == 0 {
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render("No tasks found for this contact.") + "\n"
+	} else {
+		content += fmt.Sprintf("Tasks (%d):\n\n", len(m.tasks))
+		
+		// Display tasks with selection
+		for i, task := range m.tasks {
+			line := fmt.Sprintf("  %s", task.Description)
+			
+			// Add task metadata
+			if task.Priority != "" {
+				line += fmt.Sprintf(" [%s]", task.Priority)
+			}
+			if task.Due != "" {
+				line += fmt.Sprintf(" (due: %s)", task.Due)
+			}
+			
+			// Highlight selected task
+			if i == m.selectedTask {
+				line = selectedStyle.Render("▶ " + line[2:])
+			}
+			
+			content += line + "\n"
+		}
+	}
+	
+	content += "\n\n"
+	
+	// Add help text at the bottom
+	helpText := " j/k: navigate tasks • Enter/Space: mark task complete • r: refresh • Esc: back to contacts"
+	content += lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241")).
+		Render(helpText) + "\n"
+	
+	// Create a box style
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(1).
+		Width(width).
+		Height(height)
+	
+	// Center the box on screen
+	centeredStyle := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		AlignHorizontal(lipgloss.Center).
+		AlignVertical(lipgloss.Center)
+	
+	return centeredStyle.Render(boxStyle.Render(content))
+}
+
+func (m Model) renderLabelPrompt() string {
+	width := 60
+	height := 12
+	
+	// Get the contact name for the prompt
+	contactName := "Contact"
+	if contact, err := m.db.GetContact(m.labelPromptContactID); err == nil {
+		contactName = contact.Name
+	}
+	
+	content := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("32")).
+		MarginBottom(1).
+		Render("Add Label for TaskWarrior Task") + "\n\n"
+	
+	content += fmt.Sprintf("Contact: %s\n", contactName)
+	content += fmt.Sprintf("New State: %s\n\n", m.labelPromptNewState)
+	content += "This contact needs a label to create TaskWarrior tasks.\n"
+	content += "Enter a unique label (will be used as @tag):\n\n"
+	
+	// Show error if any
+	if m.err != nil {
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			MarginBottom(1).
+			Render("Error: " + m.err.Error()) + "\n\n"
+	}
+	
+	content += "Label: " + m.labelPromptInput.View() + "\n\n"
+	content += lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241")).
+		Render("Enter: save • Esc: cancel")
+	
+	// Create a box style
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(1).
+		Width(width).
+		Height(height)
+	
+	// Center the box on screen
+	centeredStyle := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		AlignHorizontal(lipgloss.Center).
+		AlignVertical(lipgloss.Center)
+	
+	return centeredStyle.Render(boxStyle.Render(content))
+}
 
 func (m Model) renderNewContactMode() string {
 	width := 60
