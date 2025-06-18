@@ -7,6 +7,7 @@ A fast, keyboard-driven terminal interface for contact management built with Go 
 - **Keyboard-first interface** - Navigate and manage contacts without touching the mouse
 - **Quick search** - Real-time filtering as you type
 - **Contact states** - Track relationship status (ping, invite, followup, etc.)
+- **TaskWarrior integration** - Automatically create and manage tasks when contact states change
 - **Relationship types** - Organize contacts by type (work, family, network, etc.)
 - **SQLite database** - Portable, single-file storage
 - **Configurable** - Customize database location for syncing across devices
@@ -49,6 +50,8 @@ contacts-tui -show-config
 - `/` - Search contacts
 - `+` or `n` - Add new contact
 - `Enter` - View/edit contact details
+- `s` - Change contact state (ping, followup, etc.)
+- `t` - View/manage TaskWarrior tasks for contact
 - `Tab` - Switch between list and details
 - `Esc` - Cancel/go back
 - `q` - Quit
@@ -97,6 +100,86 @@ path = "~/Dropbox/contacts/contacts.db"
 ```
 
 See `config.example.toml` for a complete example configuration.
+
+## TaskWarrior Integration
+
+Contacts TUI integrates with [TaskWarrior](https://taskwarrior.org) to automatically create actionable tasks when you change contact states. This bridges your contact management with task management for better follow-through.
+
+### Features
+
+- **Automatic task creation** - When you change a contact's state from "ok" to any action state (ping, followup, invite, etc.), a corresponding TaskWarrior task is automatically created
+- **Contact-based tagging** - Tasks are tagged with the contact's label (e.g., `+@johnd`) for easy filtering
+- **Task management** - View, complete, and refresh tasks directly from the contacts interface
+- **Smart descriptions** - Task descriptions are formatted based on the state change (e.g., "Ping John Doe", "Follow up with Jane Smith")
+
+### Prerequisites
+
+1. **TaskWarrior installed** - Install from [taskwarrior.org](https://taskwarrior.org) or your package manager
+2. **Contact labels** - Contacts need labels (e.g., `@johnd`) to create tagged tasks
+
+### Usage
+
+#### Automatic Task Creation
+
+1. Select a contact and press `s` to change state
+2. Choose an action state like "ping" or "followup"  
+3. If the contact has a label, a TaskWarrior task is automatically created
+4. If no label exists, you'll be prompted to add one
+
+#### Managing Tasks
+
+- Press `t` on any contact to view their TaskWarrior tasks
+- Use `j/k` to navigate tasks
+- Press `Enter` or `Space` to complete a task
+- Press `r` to refresh the task list
+- Press `Esc` to return to contacts
+
+#### TaskWarrior Commands
+
+The integration uses standard TaskWarrior commands:
+
+```bash
+# Create task (automatic)
+task add "Ping John Doe" +@johnd
+
+# View contact's tasks
+task tag:@johnd list
+
+# Complete task
+task <id> done
+```
+
+### Examples
+
+**Contact State Change:**
+```
+Contact: John Doe (@johnd)
+State: ok → ping
+Result: Creates task "Ping John Doe" tagged with +@johnd
+```
+
+**Task Management:**
+```
+Press 't' on John Doe:
+┌─ TaskWarrior Tasks ─────────────────────────┐
+│ Contact: John Doe (@johnd)                  │
+│                                             │
+│ Tasks (2):                                  │
+│                                             │
+│ ▶ Ping John Doe                            │
+│   Follow up about project                   │
+│                                             │
+│ j/k: navigate • Enter: complete • Esc: back │
+└─────────────────────────────────────────────┘
+```
+
+### Troubleshooting
+
+- **"TaskWarrior not available"** - Install TaskWarrior and ensure it's in your PATH
+- **"Contact must have a label"** - Add a label to the contact (e.g., `@johnd`) or you'll be prompted to create one
+- **Tasks not appearing** - Ensure the contact's label matches the TaskWarrior tag format
+
+The TaskWarrior integration makes contact states genuinely actionable, ensuring follow-up tasks don't fall through the cracks.
 
 ## Building
 
