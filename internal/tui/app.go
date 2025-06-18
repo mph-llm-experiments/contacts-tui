@@ -98,6 +98,12 @@ type Model struct {
 	stateHotkeys []MenuHotkey
 	interactionHotkeys []MenuHotkey
 	relationshipHotkeys []MenuHotkey
+	
+	// Task completion mode
+	taskCompletionMode bool
+	taskCompletionInput textarea.Model
+	taskToComplete tasks.Task
+	taskCompletionPromptState bool // Whether to prompt for state update after completion
 }
 
 // MenuHotkey represents a menu item with its assigned hotkey
@@ -194,6 +200,7 @@ var InteractionTypes = []string{
 	"in-person",
 	"social-media",
 	"text",
+	"task",
 }
 
 // Available contact styles
@@ -372,6 +379,92 @@ func (m Model) Init() tea.Cmd {
 
 // Update handles messages
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Task completion mode handling - needs to be before main type switch
+	// to handle all message types, not just KeyMsg
+	if m.taskCompletionMode {
+		// Handle escape key specially
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "esc":
+				m.taskCompletionMode = false
+				m.taskCompletionInput.Reset()
+				m.taskToComplete = tasks.Task{}
+				m.taskCompletionPromptState = false
+				return m, nil
+			}
+			
+			// Check for Ctrl+Enter
+			if key.Type == tea.KeyCtrlJ || key.Type == tea.KeyCtrlM {
+				// Complete the task with the note
+				completionNote := strings.TrimSpace(m.taskCompletionInput.Value())
+				
+				// First, complete the task in TaskWarrior
+				err := m.taskManager.Backend().CompleteTask(m.taskToComplete.ID, completionNote)
+				if err != nil {
+					m.err = fmt.Errorf("completing task: %w", err)
+					m.taskCompletionMode = false
+					m.taskCompletionInput.Reset()
+					return m, nil
+				}
+				
+				// Add the completion note to contact's interaction history
+				contacts := m.filteredContacts()
+				if len(contacts) > 0 && m.selected < len(contacts) {
+					contact := contacts[m.selected]
+					
+					// Create interaction note with task context
+					interactionNote := fmt.Sprintf("Completed task \"%s\"", m.taskToComplete.Description)
+					if completionNote != "" {
+						interactionNote = fmt.Sprintf("Completed task \"%s\": %s", m.taskToComplete.Description, completionNote)
+					}
+					
+					err = m.db.AddInteractionNote(contact.ID, "task", interactionNote)
+					if err != nil {
+						m.err = fmt.Errorf("adding interaction note: %w", err)
+					}
+				}
+				
+				// Show success message
+				m.successMsg = fmt.Sprintf("✓ Completed: %s", m.taskToComplete.Description)
+				
+				// Refresh task list
+				contacts = m.filteredContacts()
+				if len(contacts) > 0 && m.selected < len(contacts) {
+					contact := contacts[m.selected]
+					if contact.Label.Valid && contact.Label.String != "" {
+						if tasks, err := m.taskManager.Backend().GetContactTasks(contact.Label.String); err == nil {
+							m.tasks = tasks
+							// Adjust selected task if we're at the end
+							if m.selectedTask >= len(m.tasks) && len(m.tasks) > 0 {
+								m.selectedTask = len(m.tasks) - 1
+							} else if len(m.tasks) == 0 {
+								m.selectedTask = 0
+							}
+						}
+					}
+				}
+				
+				// Clean up and exit task completion mode
+				m.taskCompletionMode = false
+				m.taskCompletionInput.Reset()
+				m.taskToComplete = tasks.Task{}
+				
+				// TODO: Optionally prompt for state update
+				// For now, just exit task mode if no more tasks
+				if len(m.tasks) == 0 {
+					m.taskMode = false
+				}
+				
+				return m, nil
+			}
+		}
+		
+		// Pass ALL messages to the textarea (not just key messages)
+		var cmd tea.Cmd
+		m.taskCompletionInput, cmd = m.taskCompletionInput.Update(msg)
+		return m, cmd
+	}
+	
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -514,34 +607,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 				
 			case "enter", " ":
-				// Complete selected task
+				// Show task completion form
 				if len(m.tasks) > 0 && m.selectedTask < len(m.tasks) {
 					task := m.tasks[m.selectedTask]
-					err := m.taskManager.Backend().CompleteTask(task.ID, "")
-					if err != nil {
-						m.err = fmt.Errorf("completing task: %w", err)
-						return m, nil
-					}
+					m.taskToComplete = task
+					m.taskCompletionMode = true
 					
-					// Show confirmation message
-					m.successMsg = fmt.Sprintf("✓ Completed: %s", task.Description)
+					// Initialize the task completion textarea
+					ta := textarea.New()
+					ta.Placeholder = "Add a completion note (optional)..."
+					ta.SetWidth(60)
+					ta.SetHeight(4)
+					ta.Focus()
+					m.taskCompletionInput = ta
 					
-					// Refresh task list
-					contacts := m.filteredContacts()
-					if len(contacts) > 0 && m.selected < len(contacts) {
-						contact := contacts[m.selected]
-						if contact.Label.Valid && contact.Label.String != "" {
-							if tasks, err := m.taskManager.Backend().GetContactTasks(contact.Label.String); err == nil {
-								m.tasks = tasks
-								// Adjust selected task if we're at the end
-								if m.selectedTask >= len(m.tasks) && len(m.tasks) > 0 {
-									m.selectedTask = len(m.tasks) - 1
-								} else if len(m.tasks) == 0 {
-									m.selectedTask = 0
-								}
-							}
-						}
-					}
+					// Return the focus command
+					return m, ta.Focus()
 				}
 				return m, nil
 				
@@ -1792,6 +1873,11 @@ func (m Model) View() string {
 		return m.renderStyleMode()
 	}
 	
+	// Overlay task completion mode if active (check this before task mode)
+	if m.taskCompletionMode {
+		return m.renderTaskCompletionMode()
+	}
+	
 	// Overlay task mode if active
 	if m.taskMode {
 		return m.renderTaskMode()
@@ -2729,6 +2815,64 @@ func (m Model) renderTaskMode() string {
 	
 	// Add help text at the bottom
 	helpText := " j/k: navigate tasks • Enter/Space: mark task complete • r: refresh • Esc: back to contacts"
+	content += lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241")).
+		Render(helpText) + "\n"
+	
+	// Create a box style
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240")).
+		Padding(1).
+		Width(width).
+		Height(height)
+	
+	// Center the box on screen
+	centeredStyle := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		AlignHorizontal(lipgloss.Center).
+		AlignVertical(lipgloss.Center)
+	
+	return centeredStyle.Render(boxStyle.Render(content))
+}
+
+func (m Model) renderTaskCompletionMode() string {
+	width := 80
+	height := 20
+	
+	content := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("32")).
+		MarginBottom(1).
+		Render("Complete Task") + "\n\n"
+	
+	// Show task description
+	content += lipgloss.NewStyle().
+		Bold(true).
+		MarginBottom(1).
+		Render("Task: ") + m.taskToComplete.Description + "\n\n"
+	
+	// Show current contact info
+	contacts := m.filteredContacts()
+	if len(contacts) > 0 && m.selected < len(contacts) {
+		contact := contacts[m.selected]
+		contactInfo := fmt.Sprintf("Contact: %s", contact.Name)
+		if contact.Label.Valid && contact.Label.String != "" {
+			contactInfo += fmt.Sprintf(" (%s)", contact.Label.String)
+		}
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			MarginBottom(1).
+			Render(contactInfo) + "\n\n"
+	}
+	
+	// Show the textarea for completion note
+	content += "Completion Note:\n"
+	content += m.taskCompletionInput.View() + "\n\n"
+	
+	// Add help text
+	helpText := " Ctrl+Enter: save and complete task • Esc: cancel"
 	content += lipgloss.NewStyle().
 		Foreground(lipgloss.Color("241")).
 		Render(helpText) + "\n"

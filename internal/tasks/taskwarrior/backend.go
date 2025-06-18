@@ -126,11 +126,19 @@ func (b *Backend) CompleteTask(taskID string, completionNote string) error {
 		return fmt.Errorf("TaskWarrior not available")
 	}
 
-	args := []string{taskID, "done"}
+	// If there's a completion note, add it as an annotation first
+	if completionNote != "" {
+		// Add annotation to the task
+		annotateArgs := []string{taskID, "annotate", completionNote}
+		cmd := exec.Command("task", annotateArgs...)
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("adding annotation: %w (output: %s)", err, string(output))
+		}
+	}
 	
-	// If there's a completion note, we could potentially add it as an annotation
-	// For now, we'll just complete the task
-	// TODO: Consider adding the note as an annotation before completing
+	// Now mark the task as done
+	args := []string{taskID, "done"}
 	
 	cmd := exec.Command("task", args...)
 	output, err := cmd.CombinedOutput()
