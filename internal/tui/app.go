@@ -87,6 +87,7 @@ type Model struct {
 	taskMode          bool // Task view mode
 	tasks             []tasks.Task
 	selectedTask      int
+	taskViewContactID int  // ID of contact whose tasks we're viewing
 	
 	// Label prompt mode (when creating tasks for contacts without labels)
 	labelPromptMode bool
@@ -104,6 +105,12 @@ type Model struct {
 	taskCompletionInput textarea.Model
 	taskToComplete tasks.Task
 	taskCompletionPromptState bool // Whether to prompt for state update after completion
+	
+	// State update prompt mode (after task completion)
+	stateUpdatePromptMode bool
+	stateUpdateContactID  int
+	stateUpdateFromState  string
+	stateUpdateToState    string
 }
 
 // MenuHotkey represents a menu item with its assigned hotkey
@@ -408,30 +415,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				
 				// Add the completion note to contact's interaction history
-				contacts := m.filteredContacts()
-				if len(contacts) > 0 && m.selected < len(contacts) {
-					contact := contacts[m.selected]
-					
-					// Create interaction note with task context
-					interactionNote := fmt.Sprintf("Completed task \"%s\"", m.taskToComplete.Description)
-					if completionNote != "" {
-						interactionNote = fmt.Sprintf("Completed task \"%s\": %s", m.taskToComplete.Description, completionNote)
-					}
-					
-					err = m.db.AddInteractionNote(contact.ID, "task", interactionNote)
-					if err != nil {
-						m.err = fmt.Errorf("adding interaction note: %w", err)
+				if m.taskViewContactID > 0 {
+					contact, err := m.db.GetContact(m.taskViewContactID)
+					if err == nil && contact != nil {
+						// Create interaction note with task context
+						interactionNote := fmt.Sprintf("Completed task \"%s\"", m.taskToComplete.Description)
+						if completionNote != "" {
+							interactionNote = fmt.Sprintf("Completed task \"%s\": %s", m.taskToComplete.Description, completionNote)
+						}
+						
+						err = m.db.AddInteractionNote(contact.ID, "task", interactionNote)
+						if err != nil {
+							m.err = fmt.Errorf("adding interaction note: %w", err)
+						}
 					}
 				}
 				
-				// Show success message
-				m.successMsg = fmt.Sprintf("✓ Completed: %s", m.taskToComplete.Description)
+				// Show success message with state info for debugging
+				stateInfo := "no state"
+				if m.taskViewContactID > 0 {
+					if contact, err := m.db.GetContact(m.taskViewContactID); err == nil && contact != nil && contact.State.Valid {
+						stateInfo = contact.State.String
+					}
+				}
+				m.successMsg = fmt.Sprintf("✓ Completed: %s (contact state: %s)", m.taskToComplete.Description, stateInfo)
 				
 				// Refresh task list
-				contacts = m.filteredContacts()
-				if len(contacts) > 0 && m.selected < len(contacts) {
-					contact := contacts[m.selected]
-					if contact.Label.Valid && contact.Label.String != "" {
+				if m.taskViewContactID > 0 {
+					contact, err := m.db.GetContact(m.taskViewContactID)
+					if err == nil && contact != nil && contact.Label.Valid && contact.Label.String != "" {
 						if tasks, err := m.taskManager.Backend().GetContactTasks(contact.Label.String); err == nil {
 							m.tasks = tasks
 							// Adjust selected task if we're at the end
@@ -449,10 +461,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.taskCompletionInput.Reset()
 				m.taskToComplete = tasks.Task{}
 				
-				// TODO: Optionally prompt for state update
-				// For now, just exit task mode if no more tasks
+				// Check if we should prompt for state update
+				if m.taskViewContactID > 0 {
+					contact, err := m.db.GetContact(m.taskViewContactID)
+					if err == nil && contact != nil {
+						// Check if contact has a state that suggests follow-up was needed
+						stateStr := strings.ToLower(strings.TrimSpace(contact.State.String))
+						if contact.State.Valid && (stateStr == "followup" || 
+							stateStr == "write" || 
+							stateStr == "ping" ||
+							stateStr == "scheduled") {
+							// Set up state update prompt
+							m.stateUpdatePromptMode = true
+							m.stateUpdateContactID = contact.ID
+							m.stateUpdateFromState = contact.State.String
+							m.stateUpdateToState = "ok"
+							return m, nil
+						}
+					}
+				}
+				
+				// Exit task mode if no more tasks
 				if len(m.tasks) == 0 {
 					m.taskMode = false
+					m.taskViewContactID = 0  // Clear the contact ID
 				}
 				
 				return m, nil
@@ -463,6 +495,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.taskCompletionInput, cmd = m.taskCompletionInput.Update(msg)
 		return m, cmd
+	}
+	
+	// State update prompt mode handling (after task completion)
+	if m.stateUpdatePromptMode {
+		if key, ok := msg.(tea.KeyMsg); ok {
+			switch key.String() {
+			case "y", "Y":
+				// Update the contact's state
+				err := m.db.UpdateContactState(m.stateUpdateContactID, m.stateUpdateToState)
+				if err != nil {
+					m.err = fmt.Errorf("updating contact state: %w", err)
+				} else {
+					m.successMsg = fmt.Sprintf("✓ Updated state from '%s' to '%s'", m.stateUpdateFromState, m.stateUpdateToState)
+					// Refresh contacts to show the updated state
+					if contacts, err := m.db.ListContacts(); err == nil {
+						m.contacts = contacts
+					}
+				}
+				m.stateUpdatePromptMode = false
+				// Exit task mode if no more tasks
+				if len(m.tasks) == 0 {
+					m.taskMode = false
+					m.taskViewContactID = 0  // Clear the contact ID
+				}
+				return m, nil
+			case "n", "N", "esc":
+				// Don't update state, just continue
+				m.stateUpdatePromptMode = false
+				// Exit task mode if no more tasks
+				if len(m.tasks) == 0 {
+					m.taskMode = false
+					m.taskViewContactID = 0  // Clear the contact ID
+				}
+				return m, nil
+			}
+		}
+		return m, nil
 	}
 	
 	switch msg := msg.(type) {
@@ -590,6 +659,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.taskMode = false
 				m.tasks = nil
 				m.selectedTask = 0
+				m.taskViewContactID = 0  // Clear the contact ID
 				return m, nil
 				
 			case "j", "down":
@@ -1680,6 +1750,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.taskMode = true
 						m.tasks = tasks
 						m.selectedTask = 0
+						m.taskViewContactID = contact.ID  // Store which contact we're viewing tasks for
 					} else {
 						m.err = fmt.Errorf("loading tasks: %w", err)
 					}
@@ -1876,6 +1947,11 @@ func (m Model) View() string {
 	// Overlay task completion mode if active (check this before task mode)
 	if m.taskCompletionMode {
 		return m.renderTaskCompletionMode()
+	}
+	
+	// Overlay state update prompt if active
+	if m.stateUpdatePromptMode {
+		return m.renderStateUpdatePrompt()
 	}
 	
 	// Overlay task mode if active
@@ -2854,17 +2930,17 @@ func (m Model) renderTaskCompletionMode() string {
 		Render("Task: ") + m.taskToComplete.Description + "\n\n"
 	
 	// Show current contact info
-	contacts := m.filteredContacts()
-	if len(contacts) > 0 && m.selected < len(contacts) {
-		contact := contacts[m.selected]
-		contactInfo := fmt.Sprintf("Contact: %s", contact.Name)
-		if contact.Label.Valid && contact.Label.String != "" {
-			contactInfo += fmt.Sprintf(" (%s)", contact.Label.String)
+	if m.taskViewContactID > 0 {
+		if contact, err := m.db.GetContact(m.taskViewContactID); err == nil && contact != nil {
+			contactInfo := fmt.Sprintf("Contact: %s", contact.Name)
+			if contact.Label.Valid && contact.Label.String != "" {
+				contactInfo += fmt.Sprintf(" (%s)", contact.Label.String)
+			}
+			content += lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214")).
+				MarginBottom(1).
+				Render(contactInfo) + "\n\n"
 		}
-		content += lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			MarginBottom(1).
-			Render(contactInfo) + "\n\n"
 	}
 	
 	// Show the textarea for completion note
@@ -2881,6 +2957,58 @@ func (m Model) renderTaskCompletionMode() string {
 	boxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("240")).
+		Padding(1).
+		Width(width).
+		Height(height)
+	
+	// Center the box on screen
+	centeredStyle := lipgloss.NewStyle().
+		Width(m.width).
+		Height(m.height).
+		AlignHorizontal(lipgloss.Center).
+		AlignVertical(lipgloss.Center)
+	
+	return centeredStyle.Render(boxStyle.Render(content))
+}
+
+func (m Model) renderStateUpdatePrompt() string {
+	width := 60
+	height := 12
+	
+	// Get the contact name
+	contactName := "Contact"
+	if m.stateUpdateContactID > 0 {
+		if contact, err := m.db.GetContact(m.stateUpdateContactID); err == nil && contact != nil {
+			contactName = contact.Name
+		}
+	}
+	
+	content := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("32")).
+		MarginBottom(1).
+		Render("Update Contact State?") + "\n\n"
+	
+	// Show the contact and state change
+	content += fmt.Sprintf("Contact: %s\n", contactName)
+	content += fmt.Sprintf("Current state: %s\n", m.stateUpdateFromState)
+	content += fmt.Sprintf("Change to: %s\n\n", m.stateUpdateToState)
+	
+	// Add prompt
+	content += lipgloss.NewStyle().
+		Bold(true).
+		Render("Update state? (y/n)") + "\n\n"
+	
+	// Add help text
+	helpText := " y: update state • n/Esc: keep current state"
+	content += lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241")).
+		Render(helpText)
+	
+	// Create a bordered box
+	boxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("32")).
 		Padding(1).
 		Width(width).
 		Height(height)
