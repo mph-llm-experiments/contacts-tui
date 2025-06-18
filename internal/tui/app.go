@@ -506,20 +506,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					m.err = fmt.Errorf("updating contact state: %w", err)
 				} else {
-					// Combine both success messages
-					stateUpdateMsg := fmt.Sprintf("✓ Updated state from '%s' to '%s'", m.stateUpdateFromState, m.stateUpdateToState)
-					if m.pendingSuccessMsg != "" {
-						m.successMsg = m.pendingSuccessMsg + "\n" + stateUpdateMsg
-					} else {
-						m.successMsg = stateUpdateMsg
-					}
 					// Refresh contacts to show the updated state
 					if contacts, err := m.db.ListContacts(); err == nil {
 						m.contacts = contacts
 					}
 				}
 				m.stateUpdatePromptMode = false
-				m.pendingSuccessMsg = ""  // Clear pending message
+				m.pendingSuccessMsg = ""  // Clear pending message without showing it
 				// Exit task mode if no more tasks
 				if len(m.tasks) == 0 {
 					m.taskMode = false
@@ -527,7 +520,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "n", "N", "esc":
-				// Don't update state, just show the task completion success message
+				// Don't update state, but do show the task completion success message
 				if m.pendingSuccessMsg != "" {
 					m.successMsg = m.pendingSuccessMsg
 				}
