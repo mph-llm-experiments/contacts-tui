@@ -10,7 +10,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/pdxmph/contacts-tui/internal/db"
-	"github.com/pdxmph/contacts-tui/internal/taskwarrior"
+	"github.com/pdxmph/contacts-tui/internal/tasks"
+	_ "github.com/pdxmph/contacts-tui/internal/tasks/taskwarrior" // Register TaskWarrior backend
 )
 
 // Model represents the main application state
@@ -81,10 +82,10 @@ type Model struct {
 	customFreqInput textinput.Model
 	customFreqMode bool
 	
-	// TaskWarrior integration
-	taskwarriorClient *taskwarrior.Client
+	// Task backend integration
+	taskManager       *tasks.Manager
 	taskMode          bool // Task view mode
-	tasks             []taskwarrior.Task
+	tasks             []tasks.Task
 	selectedTask      int
 	
 	// Label prompt mode (when creating tasks for contacts without labels)
@@ -340,6 +341,13 @@ func New(database *db.DB) (*Model, error) {
 	labelPromptInput.Width = 30
 	labelPromptInput.CharLimit = 50
 	
+	// Create task manager (will auto-detect available backend)
+	taskManager, err := tasks.NewManager("")
+	if err != nil {
+		// If task manager creation fails, we can still run without it
+		taskManager, _ = tasks.NewManager("noop")
+	}
+	
 	return &Model{
 		db:         database,
 		contacts:   contacts,
@@ -350,7 +358,7 @@ func New(database *db.DB) (*Model, error) {
 		interactionEditInput: interactionTA,
 		customFreqInput: customFreqInput,
 		labelPromptInput: labelPromptInput,
-		taskwarriorClient: taskwarrior.NewClient(),
+		taskManager: taskManager,
 		stateHotkeys: assignHotkeys(ContactStates),
 		interactionHotkeys: assignHotkeys(InteractionTypes),
 		relationshipHotkeys: assignHotkeys(RelationshipTypes),
@@ -509,7 +517,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Complete selected task
 				if len(m.tasks) > 0 && m.selectedTask < len(m.tasks) {
 					task := m.tasks[m.selectedTask]
-					err := m.taskwarriorClient.CompleteTask(task.UUID)
+					err := m.taskManager.Backend().CompleteTask(task.ID, "")
 					if err != nil {
 						m.err = fmt.Errorf("completing task: %w", err)
 						return m, nil
@@ -523,7 +531,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if len(contacts) > 0 && m.selected < len(contacts) {
 						contact := contacts[m.selected]
 						if contact.Label.Valid && contact.Label.String != "" {
-							if tasks, err := m.taskwarriorClient.GetContactTasks(contact.Label.String); err == nil {
+							if tasks, err := m.taskManager.Backend().GetContactTasks(contact.Label.String); err == nil {
 								m.tasks = tasks
 								// Adjust selected task if we're at the end
 								if m.selectedTask >= len(m.tasks) && len(m.tasks) > 0 {
@@ -543,7 +551,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(contacts) > 0 && m.selected < len(contacts) {
 					contact := contacts[m.selected]
 					if contact.Label.Valid && contact.Label.String != "" {
-						if tasks, err := m.taskwarriorClient.GetContactTasks(contact.Label.String); err == nil {
+						if tasks, err := m.taskManager.Backend().GetContactTasks(contact.Label.String); err == nil {
 							m.tasks = tasks
 							m.selectedTask = 0
 						} else {
@@ -595,9 +603,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				
-				// Create TaskWarrior task with new label
+				// Create task with new label
 				if contact, err := m.db.GetContact(m.labelPromptContactID); err == nil {
-					taskErr := m.taskwarriorClient.CreateContactTask(
+					taskErr := m.taskManager.Backend().CreateContactTask(
 						contact.Name,
 						m.labelPromptNewState,
 						newLabel,
@@ -897,9 +905,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.err = err
 					} else {
 						// Create TaskWarrior task if state changed from "ok" to something else
-						if newState != "ok" && m.taskwarriorClient.IsEnabled() {
+						if newState != "ok" && m.taskManager.IsEnabled() {
 							if contact.Label.Valid && contact.Label.String != "" {
-								taskErr := m.taskwarriorClient.CreateContactTask(
+								taskErr := m.taskManager.Backend().CreateContactTask(
 									contact.Name, 
 									newState, 
 									contact.Label.String,
@@ -954,10 +962,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								if err != nil {
 									m.err = err
 								} else {
-									// Create TaskWarrior task if state changed from "ok" to something else
-									if newState != "ok" && m.taskwarriorClient.IsEnabled() {
+									// Create task if state changed from "ok" to something else
+									if newState != "ok" && m.taskManager.IsEnabled() {
 										if contact.Label.Valid && contact.Label.String != "" {
-											taskErr := m.taskwarriorClient.CreateContactTask(
+											taskErr := m.taskManager.Backend().CreateContactTask(
 												contact.Name, 
 												newState, 
 												contact.Label.String,
@@ -1585,8 +1593,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			contacts := m.filteredContacts()
 			if len(contacts) > 0 && m.selected < len(contacts) {
 				contact := contacts[m.selected]
-				if m.taskwarriorClient.IsEnabled() && contact.Label.Valid && contact.Label.String != "" {
-					tasks, err := m.taskwarriorClient.GetContactTasks(contact.Label.String)
+				if m.taskManager.IsEnabled() && contact.Label.Valid && contact.Label.String != "" {
+					tasks, err := m.taskManager.Backend().GetContactTasks(contact.Label.String)
 					if err == nil {
 						m.taskMode = true
 						m.tasks = tasks
@@ -1594,8 +1602,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else {
 						m.err = fmt.Errorf("loading tasks: %w", err)
 					}
-				} else if !m.taskwarriorClient.IsEnabled() {
-					m.err = fmt.Errorf("TaskWarrior not available")
+				} else if !m.taskManager.IsEnabled() {
+					m.err = fmt.Errorf("task backend not available")
 				} else {
 					m.err = fmt.Errorf("contact must have a label to view tasks")
 				}
@@ -2546,7 +2554,7 @@ func (m Model) renderHelpOverlay() string {
 		"  e            Edit contact details",
 		"  n            Add note/interaction",
 		"  i            View/edit interaction history",
-		"  t            View/manage TaskWarrior tasks",
+		"  t            View/manage tasks",
 		"  a            Archive/unarchive contact",
 		"  m            Change contact style (periodic/ambient/triggered)",
 		"  D            Delete contact (with confirmation)",
@@ -2664,7 +2672,7 @@ func (m Model) renderTaskMode() string {
 		Bold(true).
 		Foreground(lipgloss.Color("32")).
 		MarginBottom(1).
-		Render("TaskWarrior Tasks") + "\n\n"
+		Render("Tasks") + "\n\n"
 	
 	// Show current contact info
 	contacts := m.filteredContacts()
@@ -2704,8 +2712,8 @@ func (m Model) renderTaskMode() string {
 			if task.Priority != "" {
 				line += fmt.Sprintf(" [%s]", task.Priority)
 			}
-			if task.Due != "" {
-				line += fmt.Sprintf(" (due: %s)", task.Due)
+			if task.Due != nil {
+				line += fmt.Sprintf(" (due: %s)", task.Due.Format("2006-01-02"))
 			}
 			
 			// Highlight selected task
@@ -2757,11 +2765,11 @@ func (m Model) renderLabelPrompt() string {
 		Bold(true).
 		Foreground(lipgloss.Color("32")).
 		MarginBottom(1).
-		Render("Add Label for TaskWarrior Task") + "\n\n"
+		Render("Add Label for Task") + "\n\n"
 	
 	content += fmt.Sprintf("Contact: %s\n", contactName)
 	content += fmt.Sprintf("New State: %s\n\n", m.labelPromptNewState)
-	content += "This contact needs a label to create TaskWarrior tasks.\n"
+	content += "This contact needs a label to create tasks.\n"
 	content += "Enter a unique label (will be used as @tag):\n\n"
 	
 	// Show error if any
