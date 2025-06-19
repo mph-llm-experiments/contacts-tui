@@ -15,6 +15,7 @@ import (
 	"github.com/pdxmph/contacts-tui/internal/tasks"
 	_ "github.com/pdxmph/contacts-tui/internal/tasks/dstask"     // Register dstask backend
 	_ "github.com/pdxmph/contacts-tui/internal/tasks/taskwarrior" // Register TaskWarrior backend
+	_ "github.com/pdxmph/contacts-tui/internal/tasks/things"      // Register Things backend
 )
 
 // FlashType represents the type of flash message
