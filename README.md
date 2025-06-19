@@ -257,6 +257,10 @@ Press 't' on John Doe:
 
 The task integration makes contact states genuinely actionable, ensuring follow-up tasks don't fall through the cracks across your preferred task management system.
 
+### Adding New Task Backends
+
+The task backend system is designed to be extensible. See [docs/TASK_BACKENDS.md](docs/TASK_BACKENDS.md) for implementation details.
+
 ## Building
 
 Requirements:
