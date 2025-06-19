@@ -88,9 +88,9 @@ func (b *Backend) CreateContactTask(contactName, state, label string) error {
 
 	// Build Things URL with auth token
 	// Format: things:///add?title=TITLE&tags=TAG1,TAG2&auth-token=TOKEN
-	// Note: Things expects proper percent encoding, not + for spaces
-	titleParam := url.QueryEscape(description)
-	tagsParam := url.QueryEscape(fmt.Sprintf("%s,%s", label, contactTag))
+	// Note: Things expects %20 for spaces, not + 
+	titleParam := strings.ReplaceAll(url.QueryEscape(description), "+", "%20")
+	tagsParam := strings.ReplaceAll(url.QueryEscape(fmt.Sprintf("%s,%s", label, contactTag)), "+", "%20")
 	authParam := url.QueryEscape(b.authToken)
 	
 	thingsURL := fmt.Sprintf("things:///add?title=%s&tags=%s&auth-token=%s", 
@@ -165,7 +165,8 @@ func (b *Backend) ensureTagsExist(tags []string) error {
 	return nil
 }
 
-// GetContactTasks retrieves all tasks for a contact by their label
+// GetContactTasks retrieves all open tasks for a contact by their label
+// Only returns tasks with status 'open' - excludes completed/canceled tasks
 func (b *Backend) GetContactTasks(label string) ([]tasks.Task, error) {
 	if !b.enabled {
 		return nil, fmt.Errorf("Things not available")
@@ -188,23 +189,28 @@ func (b *Backend) GetContactTasks(label string) ([]tasks.Task, error) {
 		
 		for (let i = 0; i < todos.length; i++) {
 			const todo = todos[i];
-			const tags = todo.tags().map(t => t.name());
+			const status = todo.status();
 			
-			if (tags.includes('%s')) {
-				const createdDate = todo.creationDate();
-				const modifiedDate = todo.modificationDate();
-				const dueDate = todo.dueDate();
+			// Only include open tasks (not completed or canceled)
+			if (status === 'open') {
+				const tags = todo.tags().map(t => t.name());
 				
-				result.push({
-					id: todo.id(),
-					name: todo.name(),
-					status: todo.status(),
-					tags: tags,
-					notes: todo.notes(),
-					createdDate: createdDate ? createdDate.toISOString() : null,
-					modifiedDate: modifiedDate ? modifiedDate.toISOString() : null,
-					dueDate: dueDate ? dueDate.toISOString() : null
-				});
+				if (tags.includes('%s')) {
+					const createdDate = todo.creationDate();
+					const modifiedDate = todo.modificationDate();
+					const dueDate = todo.dueDate();
+					
+					result.push({
+						id: todo.id(),
+						name: todo.name(),
+						status: status,
+						tags: tags,
+						notes: todo.notes(),
+						createdDate: createdDate ? createdDate.toISOString() : null,
+						modifiedDate: modifiedDate ? modifiedDate.toISOString() : null,
+						dueDate: dueDate ? dueDate.toISOString() : null
+					});
+				}
 			}
 		}
 		
