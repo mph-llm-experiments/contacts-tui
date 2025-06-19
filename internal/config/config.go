@@ -21,7 +21,15 @@ type DatabaseConfig struct {
 
 // TasksConfig holds task management configuration
 type TasksConfig struct {
-	Backend string `toml:"backend"` // "taskwarrior", "dstask", or "none"
+	Backend string       `toml:"backend"` // "taskwarrior", "dstask", "things", or "none"
+	Things  ThingsConfig `toml:"things"`
+}
+
+// ThingsConfig holds Things-specific configuration
+type ThingsConfig struct {
+	AuthToken    string `toml:"auth_token"`    // Required for task creation
+	DefaultList  string `toml:"default_list"`  // Optional: default list for tasks
+	TagTemplate  string `toml:"tag_template"`  // Optional: template for tags
 }
 
 // Default returns the default configuration

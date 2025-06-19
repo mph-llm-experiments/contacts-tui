@@ -23,7 +23,7 @@ func NewManager(backendName string) (*Manager, error) {
 		}
 	} else {
 		// Try backends in order of preference
-		backendPreference := []string{"taskwarrior", "dstask", "noop"}
+		backendPreference := []string{"taskwarrior", "dstask", "things", "noop"}
 		
 		for _, name := range backendPreference {
 			b, err := CreateBackend(name)

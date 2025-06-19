@@ -13,12 +13,27 @@ path = "~/.config/contacts/contacts.db"
 
 [tasks]
 # Task management backend to use
-# Options: "taskwarrior", "dstask", "none", or "" (empty for auto-detect)
-# Default: "" (auto-detect in order: taskwarrior → dstask → none)
+# Options: "taskwarrior", "dstask", "things", "none", or "" (empty for auto-detect)
+# Default: "" (auto-detect in order: taskwarrior → dstask → things → none)
 #
 # Examples:
 #   backend = "dstask"      # Force dstask even if taskwarrior is installed
 #   backend = "taskwarrior" # Force taskwarrior
+#   backend = "things"      # Force Things (macOS only)
 #   backend = "none"        # Disable task integration
 #   backend = ""            # Auto-detect (default)
 backend = ""
+
+[tasks.things]
+# Things-specific configuration (only used when backend = "things")
+# 
+# Auth token is REQUIRED for creating tasks
+# Get it from: Things > Preferences > General > Enable Things URLs > Manage
+# auth_token = "YOUR_AUTH_TOKEN_HERE"
+#
+# Optional: Default list for new tasks
+# default_list = "Anytime"
+#
+# Optional: Tag template for contact tasks
+# {state} and {label} will be replaced with actual values
+# tag_template = "contact-{state}"
