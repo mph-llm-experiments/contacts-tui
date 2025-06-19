@@ -14,6 +14,15 @@ import (
 	_ "github.com/pdxmph/contacts-tui/internal/tasks/taskwarrior" // Register TaskWarrior backend
 )
 
+// FlashType represents the type of flash message
+type FlashType int
+
+const (
+	FlashSuccess FlashType = iota
+	FlashError
+	FlashInfo
+)
+
 // Model represents the main application state
 type Model struct {
 	db         *db.DB
@@ -29,7 +38,11 @@ type Model struct {
 	noteType   int
 	filter     textinput.Model
 	err        error
-	successMsg string
+	
+	// Flash messages
+	flashMessage string
+	flashType    FlashType
+	flashJustSet bool // Track if flash was just set
 	
 	// Smart filters
 	stateFilter   bool // Show only non-ok states
@@ -264,6 +277,21 @@ var (
 	yellowStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("226")) // Yellow for triggered
 )
+
+// setFlash sets a flash message that will be displayed at the top of the screen
+func (m Model) setFlash(flashType FlashType, message string) Model {
+	m.flashMessage = message
+	m.flashType = flashType
+	m.flashJustSet = true
+	return m
+}
+
+// clearFlash removes the current flash message
+func (m Model) clearFlash() Model {
+	m.flashMessage = ""
+	return m
+}
+
 // New creates a new application model
 func New(database *db.DB) (*Model, error) {
 	// Load initial contacts
@@ -477,7 +505,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				
 				// If no state update needed, show success message immediately
-				m.successMsg = m.pendingSuccessMsg
+				if m.pendingSuccessMsg != "" {
+					m = m.setFlash(FlashSuccess, m.pendingSuccessMsg)
+				}
 				m.pendingSuccessMsg = ""
 				
 				// Exit task mode if no more tasks
@@ -506,13 +536,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					m.err = fmt.Errorf("updating contact state: %w", err)
 				} else {
+					// Show the pending success message if we have one
+					if m.pendingSuccessMsg != "" {
+						m = m.setFlash(FlashSuccess, m.pendingSuccessMsg)
+					}
 					// Refresh contacts to show the updated state
 					if contacts, err := m.db.ListContacts(); err == nil {
 						m.contacts = contacts
 					}
 				}
 				m.stateUpdatePromptMode = false
-				m.pendingSuccessMsg = ""  // Clear pending message without showing it
+				m.pendingSuccessMsg = ""  // Clear pending message
 				// Exit task mode if no more tasks
 				if len(m.tasks) == 0 {
 					m.taskMode = false
@@ -522,7 +556,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "n", "N", "esc":
 				// Don't update state, but do show the task completion success message
 				if m.pendingSuccessMsg != "" {
-					m.successMsg = m.pendingSuccessMsg
+					m = m.setFlash(FlashSuccess, m.pendingSuccessMsg)
 				}
 				m.stateUpdatePromptMode = false
 				m.pendingSuccessMsg = ""  // Clear pending message
@@ -549,6 +583,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 		
 	case tea.KeyMsg:
+		// Clear flash message on any keypress (except when it was just set)
+		if m.flashMessage != "" && !m.flashJustSet {
+			m = m.clearFlash()
+		}
+		m.flashJustSet = false
+		
 		// Relationship type filter mode handling
 		if m.typeFilterMode {
 			switch msg.String() {
@@ -767,7 +807,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if taskErr != nil {
 						m.err = fmt.Errorf("label added but task creation failed: %w", taskErr)
 					} else {
-						m.successMsg = fmt.Sprintf("✓ Added label %s and created task", newLabel)
+						m = m.setFlash(FlashSuccess, fmt.Sprintf("✓ Added label %s and created task", newLabel))
 					}
 				}
 				
@@ -1058,6 +1098,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if err != nil {
 						m.err = err
 					} else {
+						// Set flash message for successful state update
+						m = m.setFlash(FlashSuccess, fmt.Sprintf("✓ Updated %s state to %s", contact.Name, newState))
+						
 						// Create TaskWarrior task if state changed from "ok" to something else
 						if newState != "ok" && m.taskManager.IsEnabled() {
 							if contact.Label.Valid && contact.Label.String != "" {
@@ -1178,6 +1221,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							err := m.db.AddInteractionNote(contact.ID, interactionType, note)
 							if err != nil {
 								m.err = err
+							} else {
+								// Set flash message for successful note addition
+								m = m.setFlash(FlashSuccess, fmt.Sprintf("✓ Added %s note for %s", interactionType, contact.Name))
 							}
 						}
 					}
@@ -1503,6 +1549,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 			
+		case "F": // Debug: Test flash message
+			m = m.setFlash(FlashSuccess, "✓ Test flash message - working correctly!")
+			return m, nil
+			
 		case "+", "N":
 			// Enter new contact mode
 			m.newContactMode = true
@@ -1565,11 +1615,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear any error messages and return to normal operation
 			if m.err != nil {
 				m.err = nil
-				return m, nil
-			}
-			// Clear any success messages
-			if m.successMsg != "" {
-				m.successMsg = ""
 				return m, nil
 			}
 			// Close help overlay if open
@@ -1667,6 +1712,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if err != nil {
 					m.err = err
 				} else {
+					// Set flash message for successful contact marking
+					m = m.setFlash(FlashSuccess, fmt.Sprintf("✓ Marked %s as contacted", contact.Name))
+					
 					// Reload contacts to show updated state
 					if newContacts, err := m.db.ListContacts(); err == nil {
 						m.contacts = newContacts
@@ -1675,6 +1723,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			return m, nil
 			
 		case "e":
 			// Enter edit mode
@@ -1691,14 +1740,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(contacts) > 0 && m.selected < len(contacts) {
 				contact := contacts[m.selected]
 				var err error
+				var flashMsg string
 				if contact.Archived {
 					err = m.db.UnarchiveContact(contact.ID)
+					flashMsg = fmt.Sprintf("✓ Unarchived %s", contact.Name)
 				} else {
 					err = m.db.ArchiveContact(contact.ID)
+					flashMsg = fmt.Sprintf("✓ Archived %s", contact.Name)
 				}
 				if err != nil {
 					m.err = err
 				} else {
+					// Set flash message
+					m = m.setFlash(FlashSuccess, flashMsg)
+					
 					// Reload contacts to show updated state
 					if newContacts, err := m.db.ListContacts(); err == nil {
 						m.contacts = newContacts
@@ -1877,35 +1932,39 @@ func (m Model) View() string {
 		return fmt.Sprintf("Error: %v\n\nPress Esc to continue or q to quit.", m.err)
 	}
 	
-	if m.successMsg != "" {
-		return fmt.Sprintf("Success: %v\n\nPress Esc to continue.", m.successMsg)
-	}
-	
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
 	
-	// Calculate pane widths
+	// Calculate pane widths and heights
+	// Always reserve space for flash (1 line)
 	listWidth := m.width / 3
 	detailWidth := m.width - listWidth - 3 // account for borders
+	contentHeight := m.height - 4 // account for help line and flash area (always present)
 	
 	// Build the list view
-	listView := m.renderList(listWidth, m.height-3)
+	listView := m.renderList(listWidth, contentHeight)
 	
-	// Build the detail view
-	detailView := m.renderDetail(detailWidth, m.height-3)
+	// Build the detail view  
+	detailView := m.renderDetail(detailWidth, contentHeight)
 	
 	// Join horizontally
 	content := lipgloss.JoinHorizontal(
 		lipgloss.Top,
-		borderStyle.Width(listWidth).Height(m.height-3).Render(listView),
-		borderStyle.Width(detailWidth).Height(m.height-3).Render(detailView),
+		borderStyle.Width(listWidth).Height(contentHeight).Render(listView),
+		borderStyle.Width(detailWidth).Height(contentHeight).Render(detailView),
 	)
+	
+	// Always render flash area (even if empty)
+	flash := m.renderFlash()
 	
 	// Add help line
 	help := m.renderHelp()
 	
-	view := lipgloss.JoinVertical(lipgloss.Left, content, help)
+	// Build main view with permanent flash area
+	mainView := lipgloss.JoinVertical(lipgloss.Left, content, flash, help)
+	
+	// Handle overlays - these still need to be modal
 	
 	// Overlay relationship type selection if in type filter mode
 	if m.typeFilterMode {
@@ -1977,7 +2036,7 @@ func (m Model) View() string {
 		return m.renderInteractionEditMode()
 	}
 	
-	return view
+	return mainView
 }
 
 // renderList renders the contact list
@@ -2249,6 +2308,56 @@ func (m Model) renderHelp() string {
 	}
 	
 	return help
+}
+
+// renderFlash renders the flash message area (always present)
+func (m Model) renderFlash() string {
+	// Ensure we have a valid width
+	width := m.width
+	if width <= 0 {
+		width = 80 // Default width if not set
+	}
+	
+	// If no flash message, render empty space with neutral background
+	if m.flashMessage == "" {
+		return lipgloss.NewStyle().
+			Background(lipgloss.Color("235")). // Dark gray background
+			Height(1).
+			Width(width).
+			Render("")
+	}
+	
+	// Render flash message with appropriate color
+	var style lipgloss.Style
+	switch m.flashType {
+	case FlashSuccess:
+		style = lipgloss.NewStyle().
+			Background(lipgloss.Color("#2d7a2d")).
+			Foreground(lipgloss.Color("#ffffff")).
+			Padding(0, 1).
+			Width(width)
+	case FlashError:
+		style = lipgloss.NewStyle().
+			Background(lipgloss.Color("#d32f2f")).
+			Foreground(lipgloss.Color("#ffffff")).
+			Padding(0, 1).
+			Width(width)
+	case FlashInfo:
+		style = lipgloss.NewStyle().
+			Background(lipgloss.Color("#1976d2")).
+			Foreground(lipgloss.Color("#ffffff")).
+			Padding(0, 1).
+			Width(width)
+	default:
+		// Fallback style
+		style = lipgloss.NewStyle().
+			Background(lipgloss.Color("#2d7a2d")).
+			Foreground(lipgloss.Color("#ffffff")).
+			Padding(0, 1).
+			Width(width)
+	}
+	
+	return style.Render(m.flashMessage)
 }
 
 // renderStateSelection renders the state selection overlay
