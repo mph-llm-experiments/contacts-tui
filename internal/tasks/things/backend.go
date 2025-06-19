@@ -97,7 +97,8 @@ func (b *Backend) CreateContactTask(contactName, state, label string) error {
 		titleParam, tagsParam, authParam)
 	
 	// Open the URL to create the task
-	cmd := exec.Command("open", thingsURL)
+	// Use -g flag to prevent Things from activating/coming to foreground
+	cmd := exec.Command("open", "-g", thingsURL)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("creating task: %w (output: %s)", err, string(output))
