@@ -10,3 +10,15 @@
 #   path = "/mnt/shared/contacts.db"
 #   path = "~/Documents/contacts.db"
 path = "~/.config/contacts/contacts.db"
+
+[tasks]
+# Task management backend to use
+# Options: "taskwarrior", "dstask", "none", or "" (empty for auto-detect)
+# Default: "" (auto-detect in order: taskwarrior → dstask → none)
+#
+# Examples:
+#   backend = "dstask"      # Force dstask even if taskwarrior is installed
+#   backend = "taskwarrior" # Force taskwarrior
+#   backend = "none"        # Disable task integration
+#   backend = ""            # Auto-detect (default)
+backend = ""

@@ -11,11 +11,17 @@ import (
 // Config holds the application configuration
 type Config struct {
 	Database DatabaseConfig `toml:"database"`
+	Tasks    TasksConfig    `toml:"tasks"`
 }
 
 // DatabaseConfig holds database-related configuration
 type DatabaseConfig struct {
 	Path string `toml:"path"`
+}
+
+// TasksConfig holds task management configuration
+type TasksConfig struct {
+	Backend string `toml:"backend"` // "taskwarrior", "dstask", or "none"
 }
 
 // Default returns the default configuration
@@ -24,6 +30,9 @@ func Default() *Config {
 	return &Config{
 		Database: DatabaseConfig{
 			Path: filepath.Join(homeDir, ".config", "contacts", "contacts.db"),
+		},
+		Tasks: TasksConfig{
+			Backend: "", // Empty means auto-detect
 		},
 	}
 }

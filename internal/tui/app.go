@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -9,8 +10,10 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/pdxmph/contacts-tui/internal/config"
 	"github.com/pdxmph/contacts-tui/internal/db"
 	"github.com/pdxmph/contacts-tui/internal/tasks"
+	_ "github.com/pdxmph/contacts-tui/internal/tasks/dstask"     // Register dstask backend
 	_ "github.com/pdxmph/contacts-tui/internal/tasks/taskwarrior" // Register TaskWarrior backend
 )
 
@@ -125,6 +128,10 @@ type Model struct {
 	stateUpdateFromState  string
 	stateUpdateToState    string
 	pendingSuccessMsg     string  // Success message to show after state prompt
+	
+	// Dstask error handling
+	dstaskIncompleteError bool   // Special mode for handling incomplete subtasks error
+	dstaskTaskID          string // Task ID that has incomplete subtasks
 }
 
 // MenuHotkey represents a menu item with its assigned hotkey
@@ -132,6 +139,11 @@ type MenuHotkey struct {
 	Key   rune
 	Label string
 	Value string
+}
+
+// dstaskNoteEditedMsg is sent when dstask note editing is complete
+type dstaskNoteEditedMsg struct {
+	contactID int
 }
 
 // assignHotkeys assigns unique hotkeys to menu items
@@ -293,7 +305,7 @@ func (m Model) clearFlash() Model {
 }
 
 // New creates a new application model
-func New(database *db.DB) (*Model, error) {
+func New(database *db.DB, cfg *config.Config) (*Model, error) {
 	// Load initial contacts
 	contacts, err := database.ListContacts()
 	if err != nil {
@@ -384,8 +396,12 @@ func New(database *db.DB) (*Model, error) {
 	labelPromptInput.Width = 30
 	labelPromptInput.CharLimit = 50
 	
-	// Create task manager (will auto-detect available backend)
-	taskManager, err := tasks.NewManager("")
+	// Create task manager (use configured backend or auto-detect)
+	taskBackend := ""
+	if cfg != nil && cfg.Tasks.Backend != "" {
+		taskBackend = cfg.Tasks.Backend
+	}
+	taskManager, err := tasks.NewManager(taskBackend)
 	if err != nil {
 		// If task manager creation fails, we can still run without it
 		taskManager, _ = tasks.NewManager("noop")
@@ -437,7 +453,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// First, complete the task in TaskWarrior
 				err := m.taskManager.Backend().CompleteTask(m.taskToComplete.ID, completionNote)
 				if err != nil {
-					m.err = fmt.Errorf("completing task: %w", err)
+					// Check if this is a dstask incomplete subtasks error
+					if strings.Contains(err.Error(), "Refusing to resolve task with incomplete tasklist") {
+						m.dstaskIncompleteError = true
+						m.dstaskTaskID = m.taskToComplete.ID
+						m.err = fmt.Errorf("Task has incomplete subtasks")
+					} else {
+						m.err = fmt.Errorf("completing task: %w", err)
+					}
 					m.taskCompletionMode = false
 					m.taskCompletionInput.Reset()
 					return m, nil
@@ -581,6 +604,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.filter.Width = listWidth - 4 // account for borders and padding
 		}
 		return m, nil
+	
+	case dstaskNoteEditedMsg:
+		// Refresh the task list after editing dstask note
+		if m.taskMode && msg.contactID > 0 {
+			contacts := m.filteredContacts()
+			for _, contact := range contacts {
+				if contact.ID == msg.contactID && contact.Label.Valid && contact.Label.String != "" {
+					if tasks, err := m.taskManager.Backend().GetContactTasks(contact.Label.String); err == nil {
+						m.tasks = tasks
+						// Try to maintain selection if possible
+						if m.selectedTask >= len(m.tasks) {
+							m.selectedTask = len(m.tasks) - 1
+						}
+						if m.selectedTask < 0 {
+							m.selectedTask = 0
+						}
+					}
+					break
+				}
+			}
+		}
+		return m, nil
+	
+	case error:
+		// Handle errors returned from commands
+		m.err = msg
+		return m, nil
 		
 	case tea.KeyMsg:
 		// Clear flash message on any keypress (except when it was just set)
@@ -588,6 +638,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m = m.clearFlash()
 		}
 		m.flashJustSet = false
+		
+		// Error state handling with special dstask handling
+		if m.err != nil {
+			switch msg.String() {
+			case "esc":
+				m.err = nil
+				m.dstaskIncompleteError = false
+				m.dstaskTaskID = ""
+				return m, nil
+			case "q":
+				return m, tea.Quit
+			case "e":
+				// Only handle 'e' if this is a dstask incomplete error
+				if m.dstaskIncompleteError && m.dstaskTaskID != "" {
+					// Clear the error state
+					m.err = nil
+					m.dstaskIncompleteError = false
+					taskID := m.dstaskTaskID
+					contactID := m.taskViewContactID  // Capture this before any state changes
+					m.dstaskTaskID = ""
+					
+					// Create command to edit dstask note
+					c := exec.Command("dstask", taskID, "note")
+					
+					// Return a command that will suspend the TUI and run dstask
+					return m, tea.ExecProcess(c, func(err error) tea.Msg {
+						if err != nil {
+							return fmt.Errorf("dstask note editor failed: %w", err)
+						}
+						// Return a custom message to trigger task list refresh
+						return dstaskNoteEditedMsg{contactID: contactID}
+					})
+				}
+			}
+			// For any other key in error state, do nothing
+			return m, nil
+		}
 		
 		// Relationship type filter mode handling
 		if m.typeFilterMode {
@@ -1615,6 +1702,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear any error messages and return to normal operation
 			if m.err != nil {
 				m.err = nil
+				m.dstaskIncompleteError = false
+				m.dstaskTaskID = ""
 				return m, nil
 			}
 			// Close help overlay if open
@@ -1929,6 +2018,9 @@ func (m Model) ensureValidSelection() int {
 // View renders the UI
 func (m Model) View() string {
 	if m.err != nil {
+		if m.dstaskIncompleteError {
+			return fmt.Sprintf("Error: %v\n\nThis task has incomplete subtasks.\n\nPress 'e' to edit task notes and fix subtasks\nPress Esc to cancel\nPress q to quit", m.err)
+		}
 		return fmt.Sprintf("Error: %v\n\nPress Esc to continue or q to quit.", m.err)
 	}
 	

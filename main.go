@@ -67,6 +67,10 @@ func main() {
 	if *showConfig {
 		fmt.Println("Current configuration:")
 		fmt.Printf("Database path: %s\n", cfg.Database.Path)
+		fmt.Printf("Task backend: %s\n", cfg.Tasks.Backend)
+		if cfg.Tasks.Backend == "" {
+			fmt.Println("  (auto-detect: will use taskwarrior if available, then dstask, then none)")
+		}
 		return
 	}
 	
@@ -91,7 +95,7 @@ func main() {
 	}
 	
 	// Create model
-	model, err := tui.New(database)
+	model, err := tui.New(database, cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
