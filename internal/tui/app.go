@@ -3293,15 +3293,31 @@ func (m Model) renderInteractionEditMode() string {
 	width := 80
 	height := 30
 	
-	content := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("32")).
-		MarginBottom(1).
-		Render("Interaction History") + "\n\n"
+	// Calculate available content area (accounting for borders, padding, header, and instructions)
+	availableHeight := height - 8 // 2 for border, 2 for padding, 2 for header, 2 for instructions
 	
-	// Show interactions
+	// If editing or showing delete confirmation, reduce available space
+	if m.interactionEditInput.Focused() {
+		availableHeight -= 4 // Space for edit mode display
+	}
+	if m.interactionDeleteConfirm {
+		availableHeight -= 2 // Space for delete confirmation
+	}
+	
+	// Calculate lines needed for each interaction
+	type interactionDisplay struct {
+		index     int
+		lines     []string
+		lineCount int
+	}
+	
+	var interactions []interactionDisplay
+	totalLines := 0
+	
 	for i, interaction := range m.interactions {
-		// Date and type
+		display := interactionDisplay{index: i}
+		
+		// Date and type line
 		dateStr := interaction.InteractionDate.Format("2006-01-02 15:04")
 		typeStr := fmt.Sprintf("[%s]", interaction.InteractionType)
 		
@@ -3313,16 +3329,100 @@ func (m Model) renderInteractionEditMode() string {
 			prefix = "  "
 		}
 		
-		content += prefix + dateStr + " " + typeStr + "\n"
+		display.lines = append(display.lines, prefix + dateStr + " " + typeStr)
 		
 		// Notes (indented)
 		if interaction.Notes.Valid && interaction.Notes.String != "" {
 			noteLines := wrapText(interaction.Notes.String, width-8)
 			for _, line := range noteLines {
-				content += "    " + line + "\n"
+				display.lines = append(display.lines, "    " + line)
 			}
 		}
-		content += "\n"
+		
+		// Empty line after each interaction
+		display.lines = append(display.lines, "")
+		
+		display.lineCount = len(display.lines)
+		interactions = append(interactions, display)
+		totalLines += display.lineCount
+	}
+	
+	// Calculate viewport to ensure selected interaction is visible
+	viewportStart := 0
+	viewportEnd := availableHeight
+	
+	if totalLines > availableHeight {
+		// Find the position of the selected interaction
+		selectedStart := 0
+		for i := 0; i < m.selectedInteraction; i++ {
+			selectedStart += interactions[i].lineCount
+		}
+		selectedEnd := selectedStart + interactions[m.selectedInteraction].lineCount
+		
+		// Adjust viewport to keep selected interaction visible
+		if selectedEnd > viewportEnd {
+			// Selected is below viewport
+			viewportEnd = selectedEnd
+			viewportStart = viewportEnd - availableHeight
+		} else if selectedStart < viewportStart {
+			// Selected is above viewport
+			viewportStart = selectedStart
+			viewportEnd = viewportStart + availableHeight
+		}
+		
+		// Ensure we don't go past the end
+		if viewportEnd > totalLines {
+			viewportEnd = totalLines
+			viewportStart = viewportEnd - availableHeight
+			if viewportStart < 0 {
+				viewportStart = 0
+			}
+		}
+	}
+	
+	// Build content for visible portion
+	content := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("32")).
+		MarginBottom(1).
+		Render("Interaction History")
+	
+	// Add scroll indicators
+	if totalLines > availableHeight {
+		scrollInfo := fmt.Sprintf(" (%d-%d of %d)", 
+			viewportStart+1, 
+			min(viewportEnd, totalLines), 
+			totalLines)
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render(scrollInfo)
+	}
+	content += "\n\n"
+	
+	// Add visible interactions
+	currentLine := 0
+	for _, display := range interactions {
+		for _, line := range display.lines {
+			if currentLine >= viewportStart && currentLine < viewportEnd {
+				content += line + "\n"
+			}
+			currentLine++
+		}
+	}
+	
+	// Scroll indicators
+	if viewportStart > 0 {
+		content = strings.TrimSuffix(content, "\n")
+		content = strings.TrimSuffix(content, "\n")
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render("\n  ↑ More above") + "\n"
+	}
+	if viewportEnd < totalLines {
+		content = strings.TrimSuffix(content, "\n")
+		content += lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241")).
+			Render("\n  ↓ More below") + "\n"
 	}
 	
 	// If editing, show the edit textarea
@@ -3354,17 +3454,6 @@ func (m Model) renderInteractionEditMode() string {
 	content += "\n" + lipgloss.NewStyle().
 		Foreground(lipgloss.Color("241")).
 		Render(instructions)
-	
-	// Create scrollable view if content is too long
-	contentHeight := strings.Count(content, "\n") + 1
-	if contentHeight > height-4 {
-		// Simple truncation for now - could implement proper scrolling later
-		lines := strings.Split(content, "\n")
-		visibleLines := height - 6
-		if len(lines) > visibleLines {
-			content = strings.Join(lines[:visibleLines], "\n") + "\n..."
-		}
-	}
 	
 	// Create the box
 	box := lipgloss.NewStyle().
