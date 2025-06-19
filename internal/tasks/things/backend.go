@@ -78,14 +78,23 @@ func (b *Backend) CreateContactTask(contactName, state, label string) error {
 		label = "@" + label
 	}
 
+	// Prepare tags
+	contactTag := fmt.Sprintf("contact-%s", state)
+	
+	// First, ensure the tags exist in Things
+	if err := b.ensureTagsExist([]string{label, contactTag}); err != nil {
+		return fmt.Errorf("ensuring tags exist: %w", err)
+	}
+
 	// Build Things URL with auth token
 	// Format: things:///add?title=TITLE&tags=TAG1,TAG2&auth-token=TOKEN
-	params := url.Values{}
-	params.Set("title", description)
-	params.Set("tags", fmt.Sprintf("%s,contact-%s", label, state))
-	params.Set("auth-token", b.authToken)
+	// Note: Things expects proper percent encoding, not + for spaces
+	titleParam := url.QueryEscape(description)
+	tagsParam := url.QueryEscape(fmt.Sprintf("%s,%s", label, contactTag))
+	authParam := url.QueryEscape(b.authToken)
 	
-	thingsURL := "things:///add?" + params.Encode()
+	thingsURL := fmt.Sprintf("things:///add?title=%s&tags=%s&auth-token=%s", 
+		titleParam, tagsParam, authParam)
 	
 	// Open the URL to create the task
 	cmd := exec.Command("open", thingsURL)
@@ -94,6 +103,65 @@ func (b *Backend) CreateContactTask(contactName, state, label string) error {
 		return fmt.Errorf("creating task: %w (output: %s)", err, string(output))
 	}
 
+	return nil
+}
+
+// ensureTagsExist creates tags in Things if they don't already exist
+func (b *Backend) ensureTagsExist(tags []string) error {
+	// JXA script to check and create tags
+	jxaScript := `
+		const things = Application('Things3');
+		const tagsToCreate = %s;
+		const results = [];
+		
+		for (const tagName of tagsToCreate) {
+			try {
+				// Check if tag already exists
+				const existingTags = things.tags.whose({name: tagName});
+				
+				if (existingTags.length === 0) {
+					// Create the tag
+					const newTag = things.Tag({name: tagName});
+					things.tags.push(newTag);
+					results.push({tag: tagName, created: true});
+				} else {
+					results.push({tag: tagName, created: false, existed: true});
+				}
+			} catch (e) {
+				results.push({tag: tagName, error: e.toString()});
+			}
+		}
+		
+		JSON.stringify(results);
+	`
+	
+	// Convert tags to JSON array
+	tagsJSON, err := json.Marshal(tags)
+	if err != nil {
+		return fmt.Errorf("marshaling tags: %w", err)
+	}
+	
+	// Execute the script
+	fullScript := fmt.Sprintf(jxaScript, string(tagsJSON))
+	cmd := exec.Command("osascript", "-l", "JavaScript", "-e", fullScript)
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("ensuring tags exist: %w", err)
+	}
+	
+	// Parse results to check for errors
+	var results []map[string]interface{}
+	if err := json.Unmarshal(output, &results); err != nil {
+		return fmt.Errorf("parsing tag creation results: %w", err)
+	}
+	
+	// Check if any tags failed to create
+	for _, result := range results {
+		if errMsg, ok := result["error"].(string); ok {
+			return fmt.Errorf("creating tag %s: %s", result["tag"], errMsg)
+		}
+	}
+	
 	return nil
 }
 

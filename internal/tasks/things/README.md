@@ -43,10 +43,13 @@ The Things backend uses:
 - **JavaScript for Automation (JXA)** for querying and updating tasks
 - **Things URL scheme** for creating tasks (requires auth token)
 - **Tag-based filtering** to associate tasks with contacts
+- **Automatic tag creation** - tags are created if they don't exist
 
 Each task is tagged with:
 - The contact's label (e.g., `@jeffv`)
 - The contact state (e.g., `contact-ping`, `contact-followup`)
+
+When creating tasks, the backend will automatically create any missing tags in Things before creating the task. This ensures task creation always succeeds.
 
 ## Limitations
 
@@ -67,3 +70,9 @@ Each task is tagged with:
 ### Tasks not appearing
 - Ensure the contact has a label (tasks won't be created without one)
 - Check Things to see if the task was created but perhaps filtered out of your current view
+- The backend will automatically create tags if they don't exist, so missing tags shouldn't be a problem
+
+### Tag Organization
+- Contact labels (e.g., `@jeffv`) are created as top-level tags
+- State tags (e.g., `contact-ping`) are created as top-level tags
+- You can organize these tags in Things by dragging them under parent tags if desired
