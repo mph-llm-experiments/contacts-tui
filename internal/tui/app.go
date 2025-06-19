@@ -1200,6 +1200,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								if taskErr != nil {
 									// Don't fail the state change, just log the error
 									m.err = fmt.Errorf("state updated but task creation failed: %w", taskErr)
+								} else {
+									// Add flash message for successful task creation
+									m = m.setFlash(FlashSuccess, fmt.Sprintf("✓ Updated %s state to %s and created task", contact.Name, newState))
 								}
 							} else {
 								// Prompt for label instead of showing error
@@ -1247,6 +1250,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 								if err != nil {
 									m.err = err
 								} else {
+									// Set flash message for successful state update (when no task needed)
+									m = m.setFlash(FlashSuccess, fmt.Sprintf("✓ Updated %s state to %s", contact.Name, newState))
+									
 									// Create task if state changed from "ok" to something else
 									if newState != "ok" && m.taskManager.IsEnabled() {
 										if contact.Label.Valid && contact.Label.String != "" {
@@ -1258,6 +1264,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 											if taskErr != nil {
 												// Don't fail the state change, just log the error
 												m.err = fmt.Errorf("state updated but task creation failed: %w", taskErr)
+											} else {
+												// Add flash message for successful task creation
+												m = m.setFlash(FlashSuccess, fmt.Sprintf("✓ Updated %s state to %s and created task", contact.Name, newState))
 											}
 										} else {
 											// Prompt for label instead of showing error
