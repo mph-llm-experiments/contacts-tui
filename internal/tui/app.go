@@ -30,6 +30,7 @@ const (
 // Model represents the main application state
 type Model struct {
 	db         *db.DB
+	cfg        *config.Config
 	contacts   []db.Contact
 	selected   int
 	width      int
@@ -410,6 +411,7 @@ func New(database *db.DB, cfg *config.Config) (*Model, error) {
 	
 	return &Model{
 		db:         database,
+		cfg:        cfg,
 		contacts:   contacts,
 		filter:     ti,
 		noteInput:  ta,
@@ -1936,6 +1938,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+			
+		case "O":
+			// Launch notes-tui with contact tag filter (if enabled)
+			if m.cfg != nil && m.cfg.External.NotesTUI {
+				contacts := m.filteredContacts()
+				if len(contacts) > 0 && m.selected < len(contacts) {
+					contact := contacts[m.selected]
+					if contact.Label.Valid && contact.Label.String != "" {
+						// Strip @ prefix from label for tag search
+						tag := strings.TrimPrefix(contact.Label.String, "@")
+						if tag != "" {
+							// Create command to launch notes-tui with tag filter
+							c := exec.Command("notes-tui", "--tag="+tag)
+							
+							// Return a command that will suspend the TUI and run notes-tui
+							return m, tea.ExecProcess(c, func(err error) tea.Msg {
+								if err != nil {
+									return fmt.Errorf("notes-tui failed: %w", err)
+								}
+								return nil // No special handling needed on return
+							})
+						}
+					} else {
+						m.err = fmt.Errorf("contact must have a label for notes integration")
+					}
+				}
+			}
+			return m, nil
 		}
 	}
 	
@@ -2399,6 +2429,11 @@ func (m Model) renderHelp() string {
 	}
 	
 	help := " j/k: navigate • /: filter • c: contacted • ?: help • q: quit"
+	
+	// Add notes-tui integration if enabled
+	if m.cfg != nil && m.cfg.External.NotesTUI {
+		help += " • O: open notes"
+	}
 	
 	// Show clear option if any filters are active
 	if m.stateFilter || m.overdueFilter || m.typeFilter != "" || m.filter.Value() != "" || m.showArchived {
@@ -2931,6 +2966,15 @@ func (m Model) renderHelpOverlay() string {
 		"  n            Add note/interaction",
 		"  i            View/edit interaction history",
 		"  t            View/manage tasks",
+	}
+	
+	// Add notes-tui integration if enabled
+	if m.cfg != nil && m.cfg.External.NotesTUI {
+		helpLines = append(helpLines, "  O            Open notes for contact")
+	}
+	
+	// Continue with the rest of the help
+	helpLines = append(helpLines,
 		"  a            Archive/unarchive contact",
 		"  m            Change contact style (periodic/ambient/triggered)",
 		"  D            Delete contact (with confirmation)",
@@ -2954,7 +2998,7 @@ func (m Model) renderHelpOverlay() string {
 		"  j/k          Scroll down/up",
 		"  g/G          Go to top/bottom",
 		"  Esc, ?, q    Close help",
-	}
+	)
 	
 	// Calculate visible area (accounting for borders and padding)
 	visibleHeight := height - 4

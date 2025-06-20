@@ -12,6 +12,7 @@ import (
 type Config struct {
 	Database DatabaseConfig `toml:"database"`
 	Tasks    TasksConfig    `toml:"tasks"`
+	External ExternalConfig `toml:"external"`
 }
 
 // DatabaseConfig holds database-related configuration
@@ -32,6 +33,11 @@ type ThingsConfig struct {
 	TagTemplate  string `toml:"tag_template"`  // Optional: template for tags
 }
 
+// ExternalConfig holds external tool integration settings
+type ExternalConfig struct {
+	NotesTUI bool `toml:"notes_tui"` // Enable notes-tui integration
+}
+
 // Default returns the default configuration
 func Default() *Config {
 	homeDir, _ := os.UserHomeDir()
@@ -41,6 +47,9 @@ func Default() *Config {
 		},
 		Tasks: TasksConfig{
 			Backend: "", // Empty means auto-detect
+		},
+		External: ExternalConfig{
+			NotesTUI: false, // Disabled by default
 		},
 	}
 }
