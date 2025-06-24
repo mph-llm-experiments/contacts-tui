@@ -24,6 +24,20 @@ path = "~/.config/contacts/contacts.db"
 #   backend = ""            # Auto-detect (default)
 backend = ""
 
+[tasks.dstask]
+# Dstask-specific configuration (only used when backend = "dstask")
+# 
+# Project to assign to all contact tasks
+# Default: "contacts"
+# project = "contacts"
+
+[tasks.taskwarrior]
+# TaskWarrior-specific configuration (only used when backend = "taskwarrior")
+# 
+# Project to assign to all contact tasks
+# Default: "contacts"
+# project = "contacts"
+
 [tasks.things]
 # Things-specific configuration (only used when backend = "things")
 # 
@@ -37,3 +51,10 @@ backend = ""
 # Optional: Tag template for contact tasks
 # {state} and {label} will be replaced with actual values
 # tag_template = "contact-{state}"
+
+[external]
+# External tool integrations
+#
+# Enable notes-tui integration (O key to open notes for contact)
+# Default: false
+# notes_tui = false

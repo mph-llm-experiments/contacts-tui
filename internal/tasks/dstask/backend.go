@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	
+	"github.com/pdxmph/contacts-tui/internal/config"
 	"github.com/pdxmph/contacts-tui/internal/tasks"
 )
 
@@ -28,13 +29,24 @@ type dstaskTask struct {
 // Backend implements the tasks.Backend interface for dstask
 type Backend struct {
 	enabled bool
+	project string
 }
 
 // NewBackend creates a new dstask backend
 func NewBackend() tasks.Backend {
-	return &Backend{
+	backend := &Backend{
 		enabled: isDstaskAvailable(),
+		project: "contacts", // Default project
 	}
+	
+	// Load project from config if available
+	if cfg, err := config.Load(); err == nil {
+		if cfg.Tasks.Dstask.Project != "" {
+			backend.project = cfg.Tasks.Dstask.Project
+		}
+	}
+	
+	return backend
 }
 
 // Name returns the backend identifier
@@ -65,9 +77,9 @@ func (b *Backend) CreateContactTask(contactName, state, label string) error {
 		label = "@" + label
 	}
 
-	// Create the task with label and state as tags
+	// Create the task with label and state as tags, and project
 	// Using -- to ensure we don't get filtered by current context
-	args := []string{"add", "--", description, "+" + label, "+contact-" + state}
+	args := []string{"add", "--", description, "+" + label, "+contact-" + state, "project:" + b.project}
 	
 	cmd := exec.Command("dstask", args...)
 	output, err := cmd.CombinedOutput()

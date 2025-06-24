@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	
+	"github.com/pdxmph/contacts-tui/internal/config"
 	"github.com/pdxmph/contacts-tui/internal/tasks"
 )
 
@@ -26,13 +27,24 @@ type taskWarriorTask struct {
 // Backend implements the tasks.Backend interface for TaskWarrior
 type Backend struct {
 	enabled bool
+	project string
 }
 
 // NewBackend creates a new TaskWarrior backend
 func NewBackend() tasks.Backend {
-	return &Backend{
+	backend := &Backend{
 		enabled: isTaskWarriorAvailable(),
+		project: "contacts", // Default project
 	}
+	
+	// Load project from config if available
+	if cfg, err := config.Load(); err == nil {
+		if cfg.Tasks.TaskWarrior.Project != "" {
+			backend.project = cfg.Tasks.TaskWarrior.Project
+		}
+	}
+	
+	return backend
 }
 
 // Name returns the backend identifier
@@ -63,8 +75,8 @@ func (b *Backend) CreateContactTask(contactName, state, label string) error {
 		label = "@" + label
 	}
 
-	// Create the task with label as tag (+ means add tag, @chrisb is the tag name)
-	args := []string{"add", description, "+" + label}
+	// Create the task with label as tag and project
+	args := []string{"add", description, "+" + label, "project:" + b.project}
 	
 	cmd := exec.Command("task", args...)
 	output, err := cmd.CombinedOutput()

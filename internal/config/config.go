@@ -22,8 +22,10 @@ type DatabaseConfig struct {
 
 // TasksConfig holds task management configuration
 type TasksConfig struct {
-	Backend string       `toml:"backend"` // "taskwarrior", "dstask", "things", or "none"
-	Things  ThingsConfig `toml:"things"`
+	Backend      string              `toml:"backend"` // "taskwarrior", "dstask", "things", or "none"
+	Things       ThingsConfig        `toml:"things"`
+	Dstask       DstaskConfig        `toml:"dstask"`
+	TaskWarrior  TaskWarriorConfig   `toml:"taskwarrior"`
 }
 
 // ThingsConfig holds Things-specific configuration
@@ -31,6 +33,16 @@ type ThingsConfig struct {
 	AuthToken    string `toml:"auth_token"`    // Required for task creation
 	DefaultList  string `toml:"default_list"`  // Optional: default list for tasks
 	TagTemplate  string `toml:"tag_template"`  // Optional: template for tags
+}
+
+// DstaskConfig holds dstask-specific configuration
+type DstaskConfig struct {
+	Project string `toml:"project"` // Project for contact tasks (default: "contacts")
+}
+
+// TaskWarriorConfig holds TaskWarrior-specific configuration
+type TaskWarriorConfig struct {
+	Project string `toml:"project"` // Project for contact tasks (default: "contacts")
 }
 
 // ExternalConfig holds external tool integration settings
@@ -47,6 +59,12 @@ func Default() *Config {
 		},
 		Tasks: TasksConfig{
 			Backend: "", // Empty means auto-detect
+			Dstask: DstaskConfig{
+				Project: "contacts", // Default project
+			},
+			TaskWarrior: TaskWarriorConfig{
+				Project: "contacts", // Default project
+			},
 		},
 		External: ExternalConfig{
 			NotesTUI: false, // Disabled by default
